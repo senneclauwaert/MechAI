@@ -1,0 +1,20 @@
+name: Epic
+description: A feature or work area that groups several sub-issues
+labels: ["type: epic"]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+    validations:
+      required: true
+  - type: textarea
+    id: done_when
+    attributes:
+      label: Done when we can show
+      description: The demo moment that proves this epic works.
+    validations:
+      required: true
+  - type: markdown
+    attributes:
+      value: After creating the epic, add its tasks with "Create sub-issue" or "Add existing issue" on the epic.

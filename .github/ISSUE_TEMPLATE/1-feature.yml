@@ -1,0 +1,31 @@
+name: Feature or task
+description: Something to build, set up or do
+labels: ["type: feature"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What and why
+      description: One or two sentences. What should exist when this is done, and why do we need it?
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: How do we know it is done? One checkbox per check.
+      value: |
+        - [ ] 
+    validations:
+      required: true
+  - type: textarea
+    id: links
+    attributes:
+      label: Related vault notes and ADRs
+      description: Names of the notes in the MechAi vault this builds on, for example "ADR-26 Four roles".
+  - type: input
+    id: task_id
+    attributes:
+      label: Task ID
+      description: The T-number from the vault's To Do list, if there is one (also set it in the board's Task ID field).
+      placeholder: T-14

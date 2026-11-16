@@ -1,0 +1,27 @@
+name: Spike or decision
+description: A question we have to research or decide; ends in an ADR in the vault
+labels: ["type: spike", "decision"]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: The question
+    validations:
+      required: true
+  - type: textarea
+    id: options
+    attributes:
+      label: Options
+      value: |
+        1. 
+        2. 
+  - type: input
+    id: deadline
+    attributes:
+      label: Decide by
+      placeholder: 2026-11-30
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Outcome
+      description: Filled in when decided. Link the new ADR in the vault, then close this issue.
