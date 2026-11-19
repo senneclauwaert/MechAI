@@ -23,8 +23,8 @@ Two compose files:
 
 ## Start on your laptop
 
-You need Git and Docker Desktop. Python 3.12 and Node 22 are only needed to run things outside
-Docker (and for your editor).
+You need Git and Docker Desktop. [uv](https://docs.astral.sh/uv/) and Node 22 are only needed
+to run things outside Docker (and so your editor knows the libraries).
 
 ```bash
 cp .env.example .env          # then fill in MISTRAL_API_KEY (or leave it empty for the fake AI)
@@ -74,6 +74,25 @@ docker compose -f compose.yaml -f compose.dev.yaml exec api mypy app        # ty
 docker compose -f compose.yaml -f compose.dev.yaml exec api alembic revision --autogenerate -m "short description"
 docker compose -f compose.yaml -f compose.dev.yaml exec api alembic upgrade head
 ```
+
+## Python libraries with uv
+
+The backend uses [uv](https://docs.astral.sh/uv/) instead of pip. `pyproject.toml` lists the
+libraries, `uv.lock` pins their exact versions, so everyone (and the server) gets the same ones.
+
+```bash
+cd backend
+uv sync                      # creates .venv with Python 3.12 and all libraries (also for VS Code)
+uv add <library>             # add a library: updates pyproject.toml and uv.lock
+uv add --dev <tool>          # add a development-only tool (tests, linters)
+uv run pytest                # run something inside .venv without activating it
+```
+
+After `uv add`, commit both `pyproject.toml` and `uv.lock`, and rebuild the containers with
+`docker compose -f compose.yaml -f compose.dev.yaml up --build`.
+
+The frontend uses npm the same way: `package.json` lists the libraries, `package-lock.json`
+pins them, `npm install <library>` adds one.
 
 ## Folder structure
 
