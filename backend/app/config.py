@@ -3,6 +3,7 @@
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # The repo root, so `uvicorn` started from backend/ still finds ../.env
@@ -26,7 +27,7 @@ class Settings(BaseSettings):
     mistral_api_key: str = ""
     chat_model: str = "mistral-small-latest"
     embed_model: str = "mistral-embed"
-    embed_dimensions: int = 1024
+    embed_dimensions: int = Field(default=1024, ge=1024, le=1024)
     stt_model: str = "voxtral-mini-latest"
     ai_enabled: bool = True
 

@@ -10,9 +10,11 @@ export default function App() {
   const [error, setError] = useState<ApiError | null>(null)
 
   useEffect(() => {
+    let active = true
     api<Health>('/health')
-      .then(setHealth)
-      .catch((e: ApiError) => setError(e))
+      .then((value) => { if (active) setHealth(value) })
+      .catch((e: ApiError) => { if (active) setError(e) })
+    return () => { active = false }
   }, [])
 
   return (

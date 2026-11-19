@@ -15,6 +15,9 @@ log = logging.getLogger("mechai.llm")
 
 
 class LLMClient(Protocol):
+    @property
+    def embedding_model(self) -> str: ...
+
     def chat(self, messages: list[dict[str, str]], json_output: bool = False) -> str: ...
     def embed(self, texts: list[str]) -> list[list[float]]: ...
     def transcribe(self, audio: bytes, file_name: str, language: str | None = None) -> str: ...
@@ -33,6 +36,10 @@ class MistralLLM:
             raise AppError("ASSISTANT_AI_DISABLED", "MISTRAL_API_KEY is not set.", 503)
         self.settings = s
         self.client = Mistral(api_key=s.mistral_api_key)
+
+    @property
+    def embedding_model(self) -> str:
+        return self.settings.embed_model
 
     def chat(self, messages: list[dict[str, str]], json_output: bool = False) -> str:
         try:
@@ -56,7 +63,10 @@ class MistralLLM:
             raise AppError(
                 "KNOWLEDGE_EMBEDDING_FAILED", "The embedding service failed.", 503
             ) from exc
-        return [item.embedding for item in response.data]  # type: ignore[misc]
+        vectors = [item.embedding for item in response.data]
+        if len(vectors) != len(texts) or any(vector is None for vector in vectors):
+            raise AppError("KNOWLEDGE_EMBEDDING_FAILED", "The embedding service failed.", 503)
+        return vectors  # type: ignore[return-value]
 
     def transcribe(self, audio: bytes, file_name: str, language: str | None = None) -> str:
         try:
@@ -74,6 +84,8 @@ class MistralLLM:
 
 class FakeLLM:
     """Fixed answers for tests and for working without an API key."""
+
+    embedding_model = "fake-word-count-v1"
 
     def chat(self, messages: list[dict[str, str]], json_output: bool = False) -> str:
         return '{"answer": "fake"}' if json_output else "fake answer"

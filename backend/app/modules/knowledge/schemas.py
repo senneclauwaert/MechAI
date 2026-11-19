@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 
 
 class PlaygroundTextIn(BaseModel):
-    title: str = Field(max_length=300, examples=["Rear axle bearing"])
+    title: str = Field(min_length=1, max_length=300, examples=["Rear axle bearing"])
     text: str = Field(min_length=1, max_length=20_000)
 
 

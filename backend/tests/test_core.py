@@ -39,5 +39,10 @@ def test_failed_job_is_retried_then_failed(db: Session) -> None:
     assert job.status == "queued"  # will be retried later
     assert job.last_error is not None and job.last_error.startswith("CORE_TEST_FAILURE")
     job.attempts = 3
-    jobs.mark_failed(db, job, "CORE_TEST_FAILURE: again")
+    job.status = "running"
+    from datetime import UTC, datetime
+
+    job.locked_until = datetime.now(UTC) + jobs.LOCK_TIME
+    db.flush()
+    jobs.mark_failed(db, job, "CORE_TEST_FAILURE: again", job.attempts)
     assert job.status == "failed"

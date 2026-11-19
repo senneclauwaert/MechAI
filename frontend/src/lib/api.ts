@@ -13,22 +13,33 @@ export class ApiError extends Error {
 }
 
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers)
+  if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
   let response: Response
   try {
     response = await fetch(`/api/v1${path}`, {
       ...init,
-      headers: { 'Content-Type': 'application/json', ...init?.headers },
+      headers,
     })
   } catch {
     throw new ApiError('CORE_OFFLINE', 'The server cannot be reached.', null)
   }
-  const body = await response.json().catch(() => null)
+  type Json = null | boolean | number | string | Json[] | { [key: string]: Json }
+  let body: Json = null
+  try {
+    body = await response.json() as Json
+  } catch {
+    if (response.ok) {
+      throw new ApiError('CORE_INVALID_RESPONSE', 'The server returned an invalid response.', null)
+    }
+  }
   if (!response.ok) {
-    const error = body?.error
+    const value = body && typeof body === 'object' && !Array.isArray(body) ? body.error : null
+    const error = value && typeof value === 'object' && !Array.isArray(value) ? value : null
     throw new ApiError(
-      error?.code ?? 'CORE_INTERNAL',
-      error?.message ?? 'Something went wrong.',
-      error?.reference ?? null,
+      typeof error?.code === 'string' ? error.code : 'CORE_INTERNAL',
+      typeof error?.message === 'string' ? error.message : 'Something went wrong.',
+      typeof error?.reference === 'string' ? error.reference : null,
     )
   }
   return body as T

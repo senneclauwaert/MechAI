@@ -4,6 +4,7 @@ from fastapi import FastAPI
 
 from app.core.errors import register_error_handlers
 from app.core.logging import add_request_id_middleware, setup_logging
+from app.core.router import health
 from app.core.router import router as core_router
 from app.modules.knowledge.router import router as knowledge_router
 
@@ -14,6 +15,8 @@ app = FastAPI(
 )
 add_request_id_middleware(app)
 register_error_handlers(app)
+
+app.add_api_route("/health", health, methods=["GET"])
 
 API = "/api/v1"
 app.include_router(core_router, prefix=API)

@@ -18,7 +18,7 @@ RUN mkdir app && touch app/__init__.py \
 # Used by compose.dev.yaml: the code is mounted from your laptop, so it is not copied in.
 FROM base AS dev
 RUN mkdir app && touch app/__init__.py \
-    && pip install ".[dev]" && pip uninstall -y mechai-backend \
+    && pip install "pip>=25.1" && pip install --group dev . && pip uninstall -y mechai-backend \
     && rm -rf app build *.egg-info
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 

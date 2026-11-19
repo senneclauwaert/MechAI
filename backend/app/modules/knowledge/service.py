@@ -11,7 +11,6 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.config import get_settings
 from app.core import jobs
 from app.llm import get_llm
 from app.modules.knowledge import errors
@@ -54,7 +53,8 @@ def embed_text_job(db: Session, payload: dict[str, Any]) -> None:
     chunk = db.get(Chunk, uuid.UUID(payload["chunk_id"]))
     if chunk is None:
         raise errors.chunk_not_found()
-    model = get_settings().embed_model
+    llm = get_llm()
+    model = llm.embedding_model
     same = db.scalars(
         select(Chunk).where(
             Chunk.content_hash == chunk.content_hash,
@@ -62,21 +62,23 @@ def embed_text_job(db: Session, payload: dict[str, Any]) -> None:
             Chunk.embedding.is_not(None),
         )
     ).first()
-    chunk.embedding = same.embedding if same else get_llm().embed([chunk.text])[0]
+    chunk.embedding = same.embedding if same else llm.embed([chunk.text])[0]
     chunk.embedding_model = model
     db.commit()
 
 
 def search(db: Session, question: str, limit: int = 5) -> list[dict[str, Any]]:
     """Hybrid search: vector top 20 + full-text top 20, merged with RRF (vault: RAG pipeline)."""
-    has_embeddings = db.scalar(select(func.count()).where(Chunk.embedding.is_not(None)))
+    llm = get_llm()
+    active = (Chunk.embedding_model == llm.embedding_model) & Chunk.embedding.is_not(None)
+    has_embeddings = db.scalar(select(func.count()).where(active))
     if not has_embeddings:
         raise errors.nothing_embedded()
 
-    query_vector = get_llm().embed([question])[0]
+    query_vector = llm.embed([question])[0]
     by_vector = db.scalars(
         select(Chunk)
-        .where(Chunk.embedding.is_not(None))
+        .where(active)
         .order_by(Chunk.embedding.cosine_distance(query_vector))
         .limit(20)
     ).all()

@@ -8,6 +8,7 @@ import logging
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException
 
 log = logging.getLogger("mechai")
 
@@ -34,6 +35,15 @@ def _body(code: str, message: str, request: Request, **extra: object) -> dict:
 
 
 def register_error_handlers(app: FastAPI) -> None:
+    @app.exception_handler(HTTPException)
+    async def http_error(request: Request, exc: HTTPException) -> JSONResponse:
+        code = "CORE_NOT_FOUND" if exc.status_code == 404 else "CORE_HTTP_ERROR"
+        return JSONResponse(
+            _body(code, str(exc.detail), request),
+            status_code=exc.status_code,
+            headers=exc.headers,
+        )
+
     @app.exception_handler(AppError)
     async def app_error(request: Request, exc: AppError) -> JSONResponse:
         return JSONResponse(_body(exc.code, exc.message, request), status_code=exc.status)

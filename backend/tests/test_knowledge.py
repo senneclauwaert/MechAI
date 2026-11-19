@@ -14,6 +14,7 @@ def test_search_before_anything_is_embedded(client: TestClient, db: Session) -> 
 
 
 def test_add_text_embed_and_search(client: TestClient, db: Session) -> None:
+    db.execute(delete(Chunk))  # undone after the test
     for title, text in [
         ("Rear axle bearing", "Remove the rear axle and replace the bearing. Torque 25 Nm."),
         ("Battery storage", "Store the battery at 50 percent charge in a dry room."),
