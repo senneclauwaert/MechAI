@@ -1,0 +1,57 @@
+# Laptop overrides. Only the differences with compose.yaml are here.
+#   docker compose -f compose.yaml -f compose.dev.yaml up
+# - api and worker use your code from ./backend and restart when you save a file
+# - the frontend runs the Vite dev server on http://localhost:5173
+# - the database is open on localhost:5432 (for DBeaver, pgAdmin or a local venv)
+
+x-backend-dev: &backend-dev
+  image: mechai-backend:dev
+  build:
+    context: ./backend
+    target: dev
+  volumes:
+    - ./backend:/app
+    - files:/data/files
+  environment:
+    POSTGRES_HOST: db
+    ENVIRONMENT: dev
+  restart: "no"
+
+services:
+  db:
+    ports:
+      - "5432:5432"
+    restart: "no"
+
+  api:
+    <<: *backend-dev
+    command: ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"]
+    ports:
+      - "8000:8000"
+
+  worker:
+    <<: *backend-dev
+    # watchfiles restarts the worker when a Python file changes
+    command: ["watchfiles", "--filter", "python", "python -m app.worker", "app"]
+
+  frontend:
+    image: node:22-alpine
+    working_dir: /app
+    command: ["sh", "-c", "npm install && npm run dev -- --host 0.0.0.0"]
+    volumes:
+      - ./frontend:/app
+      - node_modules:/app/node_modules
+    environment:
+      API_PROXY_TARGET: http://api:8000
+    ports:
+      - "5173:5173"
+    depends_on:
+      - api
+
+  # In dev the Vite server replaces nginx, so web only starts when asked:
+  #   docker compose -f compose.yaml -f compose.dev.yaml --profile web up
+  web:
+    profiles: ["web"]
+
+volumes:
+  node_modules:
