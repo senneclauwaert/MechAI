@@ -3,8 +3,9 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import URL
 
 # The repo root, so `uvicorn` started from backend/ still finds ../.env
 ROOT_ENV = Path(__file__).resolve().parents[2] / ".env"
@@ -17,14 +18,14 @@ class Settings(BaseSettings):
 
     # Database. Inside Docker the host is "db"; on your laptop it is "localhost".
     postgres_user: str = "mechai"
-    postgres_password: str = "mechai"
+    postgres_password: SecretStr  # no default: must be set in .env
     postgres_db: str = "mechai"
     postgres_host: str = "localhost"
     postgres_port: int = 5432
     database_url: str | None = None  # set this to override the parts above
 
     # Mistral
-    mistral_api_key: str = ""
+    mistral_api_key: SecretStr | None = None
     chat_model: str = "mistral-small-latest"
     embed_model: str = "mistral-embed"
     embed_dimensions: int = Field(default=1024, ge=1024, le=1024)
@@ -35,7 +36,7 @@ class Settings(BaseSettings):
     files_dir: str = "/data/files"
 
     # Worker
-    worker_poll_seconds: float = 2.0
+    worker_poll_seconds: float = 5.0
     job_max_attempts: int = 3
 
     auth_mode: str = "dev"  # dev or pin
@@ -45,12 +46,18 @@ class Settings(BaseSettings):
     def db_url(self) -> str:
         if self.database_url:
             return self.database_url
-        return (
-            f"postgresql+psycopg://{self.postgres_user}:{self.postgres_password}"
-            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+        # URL.create escapes special characters (an "@" or "/" in the password)
+        url = URL.create(
+            "postgresql+psycopg",
+            username=self.postgres_user,
+            password=self.postgres_password.get_secret_value(),
+            host=self.postgres_host,
+            port=self.postgres_port,
+            database=self.postgres_db,
         )
+        return url.render_as_string(hide_password=False)
 
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    return Settings()  # type: ignore[call-arg]  # postgres_password comes from .env

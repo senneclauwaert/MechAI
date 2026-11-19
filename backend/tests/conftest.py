@@ -18,7 +18,7 @@ from app.main import app
 @pytest.fixture(autouse=True)
 def no_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     """Tests never call Mistral: without a key, get_llm() returns the fake client."""
-    monkeypatch.setattr(get_settings(), "mistral_api_key", "")
+    monkeypatch.setattr(get_settings(), "mistral_api_key", None)
 
 
 @pytest.fixture

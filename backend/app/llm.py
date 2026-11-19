@@ -32,10 +32,10 @@ class MistralLLM:
         from mistralai.client import Mistral
 
         s = get_settings()
-        if not s.mistral_api_key:
+        if s.mistral_api_key is None or not s.mistral_api_key.get_secret_value():
             raise AppError("ASSISTANT_AI_DISABLED", "MISTRAL_API_KEY is not set.", 503)
         self.settings = s
-        self.client = Mistral(api_key=s.mistral_api_key)
+        self.client = Mistral(api_key=s.mistral_api_key.get_secret_value())
 
     @property
     def embedding_model(self) -> str:
@@ -109,7 +109,8 @@ class FakeLLM:
 
 
 def get_llm() -> LLMClient:
-    if not get_settings().mistral_api_key:
+    key = get_settings().mistral_api_key
+    if key is None or not key.get_secret_value():
         log.warning("MISTRAL_API_KEY is empty: using the fake AI client")
         return FakeLLM()
     return MistralLLM()
