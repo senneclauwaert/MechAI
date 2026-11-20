@@ -20,7 +20,7 @@ hybrid search over the chunks.
 - The worker job `ingest_document` (payload `{"document_id": ...}`) reads the PDF with Docling,
   saves the pages (text and PNG), sections and chunks, and embeds the chunks, in one transaction.
   Before it parses anything it checks two settings: `ALLOW_EXTERNAL_EMBEDDINGS` (default `false`)
-  and `MAX_PDF_PAGES` (default 500, also checked at upload). Every embedding goes through
+  and `MAX_PDF_PAGES` (default 500, checked by the worker; the api never opens the PDF). Every embedding goes through
   `embed_chunks`, which only lets the real Mistral client work when `ALLOW_EXTERNAL_EMBEDDINGS`
   and `AI_ENABLED` are both `true` (handbook text may go to Mistral only after Supercube's written
   OK); the fake client always works. Page images are at most 6000 px on the longest side.

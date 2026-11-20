@@ -516,8 +516,8 @@ def upload_document(
     # The client's file name and content type are not trusted: look at the first bytes
     if not data.startswith(b"%PDF-"):
         raise errors.not_a_pdf()
-    if count_pdf_pages(data) > settings.max_pdf_pages:
-        raise errors.too_many_pages(settings.max_pdf_pages)
+    # The api never opens the PDF (PDFium is not thread-safe and the file is untrusted):
+    # the worker checks the page count before Docling runs.
 
     file_hash = hashlib.sha256(data).hexdigest()
     existing = _find_by_hash(db, file_hash)

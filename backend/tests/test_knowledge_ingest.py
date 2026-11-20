@@ -1,4 +1,5 @@
 import hashlib
+import sys
 import uuid
 from pathlib import Path
 from typing import Any
@@ -671,27 +672,16 @@ def test_environment_must_be_dev_or_prod() -> None:
         Settings(_env_file=None, postgres_password="x", environment="production")  # type: ignore[call-arg,arg-type]
 
 
-def test_too_many_pages_is_refused_at_upload(
-    client: TestClient, db: Session, upload_env: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(get_settings(), "max_pdf_pages", 3)
-    monkeypatch.setattr(service, "count_pdf_pages", lambda data: 4)
-    documents_before = db.scalar(select(func.count()).select_from(Document))
-    response = _upload(client)
-    assert response.status_code == 413
-    assert response.json()["error"]["code"] == "KNOWLEDGE_TOO_MANY_PAGES"
-    assert db.scalar(select(func.count()).select_from(Document)) == documents_before
-    assert not (upload_env / "knowledge").exists()
-
-
-def test_unreadable_pdf_is_refused_at_upload(
+def test_upload_never_opens_the_pdf(
     client: TestClient, upload_env: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # the real page counter, on a file that only starts like a PDF
+    # The api must not run PDFium on an untrusted file: make any pypdfium2 import fail,
+    # and put the real helpers back so a call would reach that import.
+    monkeypatch.setitem(sys.modules, "pypdfium2", None)
     monkeypatch.setattr(service, "count_pdf_pages", REAL_COUNT_PAGES)
-    response = _upload(client)
-    assert response.status_code == 422
-    assert response.json()["error"]["code"] == "KNOWLEDGE_PARSE_FAILED"
+    monkeypatch.setattr(service, "render_page_png", REAL_RENDER)
+    response = _upload(client)  # only starts like a PDF; the api accepts it unopened
+    assert response.status_code == 201
 
 
 def test_playground_is_refused_in_prod(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
