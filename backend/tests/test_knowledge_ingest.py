@@ -382,7 +382,7 @@ def test_ingest_job_saves_pages_sections_and_chunks(
     for number in (1, 2, 3):
         png = tmp_path / "knowledge" / str(ingest_document.id) / f"page-{number:03}.png"
         assert png.read_bytes() == b"png%d" % number
-    page = db.scalars(select(Page).where(Page.page_number == 1)).one()
+    page = db.scalars(select(Page).where(Page.document_id == ingest_document.id, Page.page_number == 1)).one()
     assert page.image_path == f"knowledge/{ingest_document.id}/page-001.png"
     assert page.text == "Replace the axle bearing."
 
