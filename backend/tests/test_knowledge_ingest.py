@@ -1,7 +1,11 @@
+import hashlib
 import uuid
 from pathlib import Path
+from typing import Any
 
 import pytest
+from fastapi.testclient import TestClient
+from httpx import Response
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -293,3 +297,170 @@ def test_ingest_job_missing_document(db: Session) -> None:
     with pytest.raises(AppError) as caught:
         service.ingest_document_job(db, {"document_id": str(uuid.uuid4())})
     assert caught.value.code == "KNOWLEDGE_DOCUMENT_NOT_FOUND"
+
+
+# --- upload and status endpoints ---
+
+FAKE_PDF = b"%PDF-1.4 fake"
+
+
+@pytest.fixture
+def upload_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setattr(get_settings(), "files_dir", str(tmp_path))
+    monkeypatch.setattr(service, "parse_pdf", _fake_parse)
+    monkeypatch.setattr(service, "render_page_png", lambda data, number, dpi: b"png%d" % number)
+    return tmp_path
+
+
+def _upload(client: TestClient, data: bytes = FAKE_PDF, **fields: str) -> Response:
+    form = {"title": "Test manual", **fields}
+    return client.post(
+        "/api/v1/knowledge/documents",
+        data=form,
+        files={"file": ("whatever name.pdf", data, "application/pdf")},
+    )
+
+
+def _status(client: TestClient, document_id: str) -> dict[str, Any]:
+    return client.get(f"/api/v1/knowledge/documents/{document_id}/status").json()
+
+
+def test_upload_creates_document_file_and_queued_job(
+    client: TestClient, db: Session, upload_env: Path
+) -> None:
+    response = _upload(client, revision="rev 2")
+    assert response.status_code == 201
+    body = response.json()
+    assert body["already_ingested"] is False
+    assert body["revision"] == "rev 2"
+
+    saved = upload_env / "knowledge" / body["document_id"] / "source.pdf"
+    assert saved.read_bytes() == FAKE_PDF
+    document = db.get(Document, uuid.UUID(body["document_id"]))
+    assert document is not None
+    assert document.file_path == f"knowledge/{body['document_id']}/source.pdf"
+    assert document.source_type == "handbook"
+    assert document.language == "en"
+    job = get_job(db, uuid.UUID(body["job_id"]))
+    assert job is not None
+    assert (job.type, job.status) == ("ingest_document", "queued")
+    assert job.payload == {"document_id": body["document_id"]}
+    assert document.job_id == job.id
+
+
+def test_same_file_again_returns_existing_document_without_new_job(
+    client: TestClient, upload_env: Path
+) -> None:
+    first = _upload(client).json()
+    second = _upload(client)
+    assert second.status_code == 200
+    assert second.json()["already_ingested"] is True
+    assert second.json()["document_id"] == first["document_id"]
+    assert second.json()["job_id"] == first["job_id"]
+
+
+def test_same_file_after_failed_job_queues_a_new_job(
+    client: TestClient, db: Session, upload_env: Path
+) -> None:
+    first = _upload(client).json()
+    job = get_job(db, uuid.UUID(first["job_id"]))
+    assert job is not None
+    job.status = "failed"
+    db.commit()
+
+    second = _upload(client)
+    assert second.status_code == 200
+    assert second.json()["document_id"] == first["document_id"]
+    assert second.json()["job_id"] != first["job_id"]
+    new_job = get_job(db, uuid.UUID(second.json()["job_id"]))
+    assert new_job is not None and new_job.status == "queued"
+
+
+def test_upload_that_loses_a_race_returns_the_winner(
+    client: TestClient, db: Session, upload_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    file_hash = hashlib.sha256(FAKE_PDF).hexdigest()
+    winner = Document(title="Winner", file_hash=file_hash)
+    db.add(winner)
+    db.commit()
+
+    # The first lookup finds nothing, as if the other upload committed just after it
+    real_lookup = service._find_by_hash
+    lookups = iter([None])
+    monkeypatch.setattr(
+        service, "_find_by_hash", lambda db, h: next(lookups, None) or real_lookup(db, h)
+    )
+
+    response = _upload(client)
+    assert response.status_code == 200
+    assert response.json()["already_ingested"] is True
+    assert response.json()["document_id"] == str(winner.id)
+    assert not (upload_env / "knowledge").exists()  # the lost upload saved no file
+
+
+def test_png_renamed_to_pdf_is_refused(client: TestClient, upload_env: Path) -> None:
+    response = _upload(client, data=b"\x89PNG\r\n\x1a\n not a pdf")
+    assert response.status_code == 415
+    assert response.json()["error"]["code"] == "KNOWLEDGE_NOT_A_PDF"
+
+
+def test_too_large_file_is_refused(
+    client: TestClient, upload_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(get_settings(), "max_pdf_mb", 1)
+    response = _upload(client, data=b"%PDF-" + b"0" * (1024 * 1024 - 4))  # 1 MB + 1 byte
+    assert response.status_code == 413
+    assert response.json()["error"]["code"] == "KNOWLEDGE_FILE_TOO_LARGE"
+
+
+def test_upload_is_refused_in_prod(
+    client: TestClient, upload_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(get_settings(), "environment", "prod")
+    response = _upload(client)
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "KNOWLEDGE_UPLOAD_NOT_ALLOWED"
+
+
+def test_upload_without_title_is_refused(client: TestClient, upload_env: Path) -> None:
+    response = client.post(
+        "/api/v1/knowledge/documents", files={"file": ("a.pdf", FAKE_PDF, "application/pdf")}
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "CORE_VALIDATION_FAILED"
+
+
+def test_status_is_queued_then_done_with_counts(
+    client: TestClient, db: Session, upload_env: Path
+) -> None:
+    document_id = _upload(client).json()["document_id"]
+    queued = _status(client, document_id)
+    assert queued["status"] == "queued"
+    assert (queued["page_count"], queued["section_count"], queued["chunk_count"]) == (0, 0, 0)
+
+    assert run_one(db)
+    done = _status(client, document_id)
+    assert done["status"] == "done"
+    assert done["error_code"] is None
+    assert (done["page_count"], done["section_count"], done["chunk_count"]) == (3, 2, 2)
+
+
+def test_status_is_failed_with_error_code_when_the_parser_fails(
+    client: TestClient, db: Session, upload_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(data: bytes) -> tuple[list[ParsedItem], dict[int, str]]:
+        raise errors.parse_failed()
+
+    monkeypatch.setattr(service, "parse_pdf", broken)
+    monkeypatch.setattr(get_settings(), "job_max_attempts", 1)
+    document_id = _upload(client).json()["document_id"]
+    assert run_one(db)
+    failed = _status(client, document_id)
+    assert failed["status"] == "failed"
+    assert failed["error_code"] == "KNOWLEDGE_PARSE_FAILED"
+
+
+def test_status_of_unknown_document_is_404(client: TestClient) -> None:
+    response = client.get(f"/api/v1/knowledge/documents/{uuid.uuid4()}/status")
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "CORE_NOT_FOUND"

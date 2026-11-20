@@ -13,10 +13,13 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from sqlalchemy import delete, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.core import jobs
+from app.core.errors import not_found
+from app.core.models import Job
 from app.llm import get_llm
 from app.modules.knowledge import errors
 from app.modules.knowledge.models import Chunk, Document, Page, Section
@@ -410,6 +413,101 @@ def ingest_document_job(db: Session, payload: dict[str, Any]) -> None:
         len(chunks),
         embedded,
     )
+
+
+def _find_by_hash(db: Session, file_hash: str) -> Document | None:
+    return db.scalars(select(Document).where(Document.file_hash == file_hash)).first()
+
+
+def _queue_ingest(db: Session, document: Document) -> Job:
+    job = jobs.enqueue(db, "ingest_document", {"document_id": str(document.id)})
+    document.job_id = job.id
+    db.commit()
+    return job
+
+
+def _known_document(db: Session, document: Document) -> tuple[Document, Job, bool]:
+    """The file was uploaded before: queue a new job only when the last one failed (or is gone)."""
+    job = jobs.get_job(db, document.job_id) if document.job_id else None
+    if job is None or job.status == "failed":
+        job = _queue_ingest(db, document)
+    return document, job, True
+
+
+def upload_document(
+    db: Session, data: bytes, title: str, revision: str | None, kart_model: str | None
+) -> tuple[Document, Job, bool]:
+    """Save an uploaded handbook and queue its ingestion. The last value is `already_ingested`."""
+    settings = get_settings()
+    # Until #26 adds the admin check, uploading is only allowed outside production
+    if settings.environment == "prod":
+        raise errors.upload_not_allowed()
+    if len(data) > settings.max_pdf_mb * 1024 * 1024:
+        raise errors.file_too_large(settings.max_pdf_mb)
+    # The client's file name and content type are not trusted: look at the first bytes
+    if not data.startswith(b"%PDF-"):
+        raise errors.not_a_pdf()
+
+    file_hash = hashlib.sha256(data).hexdigest()
+    existing = _find_by_hash(db, file_hash)
+    if existing is not None:
+        return _known_document(db, existing)
+
+    document = Document(
+        id=uuid.uuid4(),
+        title=title,
+        revision=revision,
+        kart_model=kart_model,
+        language="en",
+        source_type="handbook",
+        file_hash=file_hash,
+    )
+    db.add(document)
+    try:
+        db.flush()
+    except IntegrityError:
+        # Two uploads of the same file at the same moment: the other one won, return its document.
+        # No file was saved yet, and every document has its own folder, so nothing is overwritten.
+        db.rollback()
+        winner = _find_by_hash(db, file_hash)
+        if winner is None:
+            raise
+        return _known_document(db, winner)
+
+    # Our own file name, never the client's
+    document.file_path = storage.save_file(f"knowledge/{document.id}", "source.pdf", data)
+    return document, _queue_ingest(db, document), False
+
+
+def document_status(db: Session, document_id: uuid.UUID) -> dict[str, Any]:
+    """Where the ingestion of a document stands, with the counts of what was saved."""
+    document = db.get(Document, document_id)
+    if document is None:
+        raise not_found("Document")
+    job = jobs.get_job(db, document.job_id) if document.job_id else None
+    status = job.status if job else "queued"
+    error_code = None
+    if status == "failed" and job and job.last_error:
+        error_code = job.last_error.split(":", 1)[0]  # the worker stores "CODE: message"
+
+    pages = db.scalar(select(func.count()).where(Page.document_id == document_id))
+    sections = db.scalar(select(func.count()).where(Section.document_id == document_id))
+    chunks = db.scalar(
+        select(func.count())
+        .select_from(Chunk)
+        .join(Section, Chunk.section_id == Section.id)
+        .where(Section.document_id == document_id)
+    )
+    return {
+        "document_id": str(document.id),
+        "title": document.title,
+        "revision": document.revision,
+        "status": status,
+        "error_code": error_code,
+        "page_count": pages or 0,
+        "section_count": sections or 0,
+        "chunk_count": chunks or 0,
+    }
 
 
 def search(db: Session, question: str, limit: int = 5) -> list[dict[str, Any]]:

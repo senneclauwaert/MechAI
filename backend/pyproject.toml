@@ -17,6 +17,7 @@ dependencies = [
     # direct so that [tool.uv.sources] below applies to them (docling pulls them in)
     "torch",
     "torchvision",
+    "python-multipart>=0.0.34",
 ]
 
 # Tools for development only (installed by `uv sync`, not in the server image)
