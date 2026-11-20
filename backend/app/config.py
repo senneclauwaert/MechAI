@@ -35,6 +35,14 @@ class Settings(BaseSettings):
     # Files (the Docker volume)
     files_dir: str = "/data/files"
 
+    # Handbook ingestion
+    chunk_tokens: int = Field(default=300, ge=50, le=2000)
+    chunk_overlap_tokens: int = Field(default=50, ge=0, le=500)
+    section_max_tokens: int = Field(default=1500, ge=300, le=8000)
+    max_pdf_mb: int = Field(default=50, ge=1, le=50)
+    page_image_dpi: int = Field(default=150, ge=72, le=300)
+    docling_models_dir: str | None = None
+
     # Worker
     worker_poll_seconds: float = 5.0
     job_max_attempts: int = 3

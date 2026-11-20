@@ -4,7 +4,7 @@ import uuid
 from datetime import date
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Computed, Date, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import Computed, Date, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import TSVECTOR
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -25,11 +25,18 @@ class Document(Base):
     published_on: Mapped[date | None] = mapped_column(Date)
     superseded_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("knowledge.documents.id"))
     file_path: Mapped[str | None] = mapped_column(String(500))
+    file_hash: Mapped[str | None] = mapped_column(String(64), unique=True)
+    job_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("core.jobs.id", ondelete="SET NULL")
+    )
 
 
 class Page(Base):
     __tablename__ = "pages"
-    __table_args__ = {"schema": "knowledge"}
+    __table_args__ = (
+        UniqueConstraint("document_id", "page_number", name="pages_document_page"),
+        {"schema": "knowledge"},
+    )
 
     document_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("knowledge.documents.id", ondelete="CASCADE"), index=True

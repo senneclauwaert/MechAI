@@ -4,6 +4,7 @@ The api calls enqueue(). The worker calls claim_next() in a loop. Two workers ne
 the same job, thanks to `FOR UPDATE SKIP LOCKED`.
 """
 
+import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -22,6 +23,10 @@ def enqueue(db: Session, job_type: str, payload: dict[str, Any] | None = None) -
     db.add(job)
     db.commit()
     return job
+
+
+def get_job(db: Session, job_id: uuid.UUID) -> Job | None:
+    return db.get(Job, job_id)
 
 
 def claim_next(db: Session) -> Job | None:
