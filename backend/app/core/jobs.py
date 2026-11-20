@@ -4,6 +4,7 @@ The api calls enqueue(). The worker calls claim_next() in a loop. Two workers ne
 the same job, thanks to `FOR UPDATE SKIP LOCKED`.
 """
 
+import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -17,11 +18,20 @@ LOCK_TIME = timedelta(minutes=10)  # a crashed job is picked up again after this
 RETRY_DELAY = timedelta(seconds=30)
 
 
-def enqueue(db: Session, job_type: str, payload: dict[str, Any] | None = None) -> Job:
+def enqueue(
+    db: Session, job_type: str, payload: dict[str, Any] | None = None, *, commit: bool = True
+) -> Job:
     job = Job(type=job_type, payload=payload or {})
     db.add(job)
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     return job
+
+
+def get_job(db: Session, job_id: uuid.UUID) -> Job | None:
+    return db.get(Job, job_id)
 
 
 def claim_next(db: Session) -> Job | None:

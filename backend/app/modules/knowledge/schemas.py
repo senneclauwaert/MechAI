@@ -1,5 +1,7 @@
 """Request and response shapes of the knowledge module."""
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -25,3 +27,22 @@ class SearchHit(BaseModel):
 class SearchOut(BaseModel):
     question: str
     hits: list[SearchHit]
+
+
+class DocumentOut(BaseModel):
+    document_id: str
+    job_id: str
+    title: str
+    revision: str | None
+    already_ingested: bool
+
+
+class DocumentStatusOut(BaseModel):
+    document_id: str
+    title: str
+    revision: str | None
+    status: Literal["queued", "running", "done", "failed"]
+    error_code: str | None
+    page_count: int
+    section_count: int
+    chunk_count: int

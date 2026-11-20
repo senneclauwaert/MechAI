@@ -20,14 +20,14 @@ x-backend-dev: &backend-dev
 services:
   db:
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"  # only this laptop, not the network
     restart: "no"
 
   api:
     <<: *backend-dev
     command: ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"]
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"  # only this laptop, not the network
 
   worker:
     <<: *backend-dev
@@ -44,14 +44,15 @@ services:
     environment:
       API_PROXY_TARGET: http://api:8000
     ports:
-      - "5173:5173"
+      - "127.0.0.1:5173:5173"  # only this laptop, not the network
     depends_on:
       - api
 
   # In dev the Vite server replaces nginx, so web only starts when asked:
   #   docker compose -f compose.yaml -f compose.dev.yaml --profile web up
   web:
-    profiles: ["web"]
-
+    profiles: ["web"] 
+    ports: !override
+      - "127.0.0.1:${WEB_PORT:-80}:80"
 volumes:
   node_modules:
