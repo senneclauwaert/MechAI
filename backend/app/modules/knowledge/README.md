@@ -19,6 +19,9 @@ hybrid search over the chunks.
   `failed`), `error_code` when failed, and the number of pages, sections and chunks saved.
 - The worker job `ingest_document` (payload `{"document_id": ...}`) reads the PDF with Docling,
   saves the pages (text and PNG), sections and chunks, and embeds the chunks, in one transaction.
+  Before it parses anything it checks two settings: `ALLOW_EXTERNAL_EMBEDDINGS` (default `false`:
+  with the real Mistral client the job stops, because handbook text may go to Mistral only after
+  Supercube's written OK; the fake client always works) and `MAX_PDF_PAGES` (default 500).
 
 **Re-upload rule** (SHA-256 of the file): the same file again returns the existing document and
 queues nothing, unless its job failed: then a new job is queued for the same document. Two uploads
@@ -33,6 +36,9 @@ of the same file at the same moment end up with one document (the database refus
 | `KNOWLEDGE_NOT_A_PDF` | Alleen PDF-bestanden kunnen geupload worden. | Seuls les fichiers PDF peuvent etre televerses. | Only PDF files can be uploaded. |
 | `KNOWLEDGE_FILE_TOO_LARGE` | Het bestand is groter dan de toegelaten grootte. | Le fichier depasse la taille autorisee. | The file is larger than the allowed size. |
 | `KNOWLEDGE_UPLOAD_NOT_ALLOWED` | Je mag geen documenten uploaden. | Vous n'avez pas le droit de televerser des documents. | You are not allowed to upload documents. |
+| `KNOWLEDGE_STATUS_NOT_ALLOWED` | Je mag de verwerkingsstatus niet bekijken. | Vous n'avez pas le droit de voir l'etat du traitement. | You are not allowed to see the ingestion status. |
+| `KNOWLEDGE_TOO_MANY_PAGES` | De PDF heeft te veel pagina's. | Le PDF a trop de pages. | The PDF has more than the allowed number of pages. |
+| `KNOWLEDGE_EXTERNAL_EMBEDDINGS_OFF` | Handbooktekst naar de AI-aanbieder sturen staat uit. | L'envoi du texte du manuel au fournisseur d'IA est desactive. | Sending handbook text to the AI provider is switched off. |
 | `STORAGE_FILE_MISSING` | Dit bestand bestaat niet. | Ce fichier n'existe pas. | This file does not exist. |
 | `STORAGE_PATH_NOT_ALLOWED` | Deze bestandslocatie is niet toegelaten. | Cet emplacement de fichier n'est pas autorise. | This file location is not allowed. |
 

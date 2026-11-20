@@ -263,6 +263,7 @@ def ingest_document(db: Session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(get_settings(), "files_dir", str(tmp_path))
     monkeypatch.setattr(service, "parse_pdf", _fake_parse)
     monkeypatch.setattr(service, "render_page_png", lambda data, number, dpi: b"png%d" % number)
+    monkeypatch.setattr(service, "count_pdf_pages", lambda data: 3)
     path = storage.save_file("knowledge/source", "manual.bin", b"fake file")
     document = Document(title="Test manual", file_path=path)
     db.add(document)
@@ -334,6 +335,122 @@ def test_ingest_job_parse_failure_is_stored_in_last_error(
     assert job.last_error.startswith("KNOWLEDGE_PARSE_FAILED")
 
 
+class _RealLookingLLM:
+    """Not a FakeLLM: stands for the real provider. Counts the embed calls."""
+
+    embedding_model = "stub-model"
+
+    def __init__(self, works: bool) -> None:
+        self.works = works
+        self.embed_calls = 0
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        self.embed_calls += 1
+        assert self.works, "embed must not be called"
+        return FakeLLM().embed(texts)
+
+
+def _stub_llm(monkeypatch: pytest.MonkeyPatch, works: bool) -> _RealLookingLLM:
+    llm = _RealLookingLLM(works)
+    monkeypatch.setattr(service, "get_llm", lambda: llm)
+    return llm
+
+
+def _spy_pipeline(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Records which of parse_pdf and render_page_png were called."""
+    calls: list[str] = []
+
+    def parse(data: bytes) -> tuple[list[ParsedItem], dict[int, str]]:
+        calls.append("parse")
+        return _fake_parse(data)
+
+    def render(data: bytes, number: int, dpi: int) -> bytes:
+        calls.append("render")
+        return b"png"
+
+    monkeypatch.setattr(service, "parse_pdf", parse)
+    monkeypatch.setattr(service, "render_page_png", render)
+    return calls
+
+
+def test_external_embeddings_off_stops_the_job_before_any_work(
+    db: Session, ingest_document: Document, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    llm = _stub_llm(monkeypatch, works=False)
+    calls = _spy_pipeline(monkeypatch)
+    monkeypatch.setattr(get_settings(), "allow_external_embeddings", False)
+    job = enqueue(db, "ingest_document", {"document_id": str(ingest_document.id)})
+    assert run_one(db)
+    db.refresh(job)
+    assert job.last_error is not None
+    assert job.last_error.startswith("KNOWLEDGE_EXTERNAL_EMBEDDINGS_OFF")
+    assert _counts(db, ingest_document) == (0, 0, 0)
+    assert calls == []
+    assert llm.embed_calls == 0
+
+
+def test_external_embeddings_on_lets_a_real_client_ingest(
+    db: Session, ingest_document: Document, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    llm = _stub_llm(monkeypatch, works=True)
+    monkeypatch.setattr(get_settings(), "allow_external_embeddings", True)
+    service.ingest_document_job(db, {"document_id": str(ingest_document.id)})
+    assert _counts(db, ingest_document) == (3, 2, 2)
+    assert llm.embed_calls == 1
+
+
+def test_fake_client_ingests_with_external_embeddings_off(
+    db: Session, ingest_document: Document, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(get_settings(), "allow_external_embeddings", False)
+    service.ingest_document_job(db, {"document_id": str(ingest_document.id)})
+    assert _counts(db, ingest_document) == (3, 2, 2)
+
+
+def test_render_failure_costs_no_embeddings(
+    db: Session, ingest_document: Document, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sizes = _spy_embed(monkeypatch)
+
+    def broken(data: bytes, number: int, dpi: int) -> bytes:
+        raise RuntimeError("render failed")
+
+    monkeypatch.setattr(service, "render_page_png", broken)
+    with pytest.raises(RuntimeError):
+        service.ingest_document_job(db, {"document_id": str(ingest_document.id)})
+    db.rollback()
+    assert sizes == []
+    assert _counts(db, ingest_document) == (0, 0, 0)
+
+
+def test_too_many_pages_stops_before_docling(
+    db: Session, ingest_document: Document, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _spy_pipeline(monkeypatch)
+    monkeypatch.setattr(get_settings(), "max_pdf_pages", 3)
+    monkeypatch.setattr(service, "count_pdf_pages", lambda data: 4)
+    with pytest.raises(AppError) as caught:
+        service.ingest_document_job(db, {"document_id": str(ingest_document.id)})
+    assert caught.value.code == "KNOWLEDGE_TOO_MANY_PAGES"
+    assert caught.value.status == 413
+    assert calls == []
+
+
+def test_exactly_the_page_limit_is_accepted(
+    db: Session, ingest_document: Document, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(get_settings(), "max_pdf_pages", 3)
+    monkeypatch.setattr(service, "count_pdf_pages", lambda data: 3)
+    service.ingest_document_job(db, {"document_id": str(ingest_document.id)})
+    assert _counts(db, ingest_document) == (3, 2, 2)
+
+
+def test_count_pdf_pages_of_a_broken_file_is_parse_failed() -> None:
+    with pytest.raises(AppError) as caught:
+        service.count_pdf_pages(b"%PDF-1.4 not really")
+    assert caught.value.code == "KNOWLEDGE_PARSE_FAILED"
+
+
 def test_ingest_job_missing_document(db: Session) -> None:
     with pytest.raises(AppError) as caught:
         service.ingest_document_job(db, {"document_id": str(uuid.uuid4())})
@@ -350,6 +467,7 @@ def upload_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(get_settings(), "files_dir", str(tmp_path))
     monkeypatch.setattr(service, "parse_pdf", _fake_parse)
     monkeypatch.setattr(service, "render_page_png", lambda data, number, dpi: b"png%d" % number)
+    monkeypatch.setattr(service, "count_pdf_pages", lambda data: 3)
     return tmp_path
 
 
@@ -484,7 +602,7 @@ def test_status_is_refused_in_prod(
     monkeypatch.setattr(get_settings(), "environment", "prod")
     response = client.get(f"/api/v1/knowledge/documents/{document_id}/status")
     assert response.status_code == 403
-    assert response.json()["error"]["code"] == "KNOWLEDGE_UPLOAD_NOT_ALLOWED"
+    assert response.json()["error"]["code"] == "KNOWLEDGE_STATUS_NOT_ALLOWED"
 
 
 def test_empty_docling_models_dir_is_none() -> None:

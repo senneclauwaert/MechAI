@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     section_max_tokens: int = Field(default=1500, ge=300, le=8000)
     max_pdf_mb: int = Field(default=50, ge=1, le=50)
     page_image_dpi: int = Field(default=150, ge=72, le=300)
+    max_pdf_pages: int = Field(default=500, ge=1, le=5000)
+    # Handbook text goes to the AI provider only after Supercube's written OK
+    allow_external_embeddings: bool = False
     docling_models_dir: str | None = None
 
     # Worker

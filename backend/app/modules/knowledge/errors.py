@@ -23,6 +23,24 @@ def upload_not_allowed() -> AppError:
     return AppError("KNOWLEDGE_UPLOAD_NOT_ALLOWED", "You are not allowed to upload documents.", 403)
 
 
+def status_not_allowed() -> AppError:
+    return AppError(
+        "KNOWLEDGE_STATUS_NOT_ALLOWED", "You are not allowed to see the ingestion status.", 403
+    )
+
+
+def too_many_pages(max_pages: int) -> AppError:
+    return AppError("KNOWLEDGE_TOO_MANY_PAGES", f"The PDF has more than {max_pages} pages.", 413)
+
+
+def external_embeddings_off() -> AppError:
+    return AppError(
+        "KNOWLEDGE_EXTERNAL_EMBEDDINGS_OFF",
+        "Sending handbook text to the AI provider is switched off (ALLOW_EXTERNAL_EMBEDDINGS).",
+        409,
+    )
+
+
 def chunk_not_found() -> AppError:
     return AppError("KNOWLEDGE_CHUNK_NOT_FOUND", "This text piece does not exist.", 404)
 

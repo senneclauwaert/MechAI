@@ -18,9 +18,9 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.core import jobs
-from app.core.errors import not_found
+from app.core.errors import AppError, not_found
 from app.core.models import Job
-from app.llm import get_llm
+from app.llm import FakeLLM, get_llm
 from app.modules.knowledge import errors
 from app.modules.knowledge.models import Chunk, Document, Page, Section
 from app.modules.storage import service as storage
@@ -367,6 +367,20 @@ def render_page_png(data: bytes, page_number: int, dpi: int) -> bytes:
         pdf.close()
 
 
+def count_pdf_pages(data: bytes) -> int:
+    """Count the pages without parsing the PDF (much cheaper than Docling)."""
+    import pypdfium2
+
+    try:
+        pdf = pypdfium2.PdfDocument(data)
+    except pypdfium2.PdfiumError as exc:
+        raise errors.parse_failed() from exc
+    try:
+        return len(pdf)
+    finally:
+        pdf.close()
+
+
 def ingest_document_job(db: Session, payload: dict[str, Any]) -> None:
     """Worker job: PDF -> pages (text + PNG) -> sections -> chunks -> embeddings. One commit."""
     settings = get_settings()
@@ -374,7 +388,12 @@ def ingest_document_job(db: Session, payload: dict[str, Any]) -> None:
     if document is None:
         raise errors.document_not_found()
 
+    # Checks first, so nothing is read, parsed or rendered for a job that cannot succeed
+    if not settings.allow_external_embeddings and not isinstance(get_llm(), FakeLLM):
+        raise errors.external_embeddings_off()
     data = storage.open_file(document.file_path or "")
+    if count_pdf_pages(data) > settings.max_pdf_pages:
+        raise errors.too_many_pages(settings.max_pdf_pages)
     items, page_texts = parse_pdf(data)
 
     drafts = split_long_sections(build_sections(items, document.title), settings.section_max_tokens)
@@ -404,16 +423,21 @@ def ingest_document_job(db: Session, payload: dict[str, Any]) -> None:
                     token_count=approx_tokens(text),
                 )
             )
-    # Embed before the old chunks are deleted, so a retry reuses their embeddings
+    # Order: render first (it can fail, and embeddings cost money), then embed while the old
+    # chunks still exist (a retry reuses their embeddings), then replace the old rows.
+    pages: list[Page] = []
+    for number, text in page_texts.items():
+        png = render_page_png(data, number, settings.page_image_dpi)
+        image_path = storage.save_file(f"knowledge/{document.id}", f"page-{number:03}.png", png)
+        pages.append(
+            Page(document_id=document.id, page_number=number, image_path=image_path, text=text)
+        )
     embedded = embed_chunks(db, chunks)
 
     # a retry starts clean; the chunks go with their sections (ON DELETE CASCADE)
     db.execute(delete(Section).where(Section.document_id == document.id))
     db.execute(delete(Page).where(Page.document_id == document.id))
-    for number, text in page_texts.items():
-        png = render_page_png(data, number, settings.page_image_dpi)
-        image_path = storage.save_file(f"knowledge/{document.id}", f"page-{number:03}.png", png)
-        db.add(Page(document_id=document.id, page_number=number, image_path=image_path, text=text))
+    db.add_all(pages)
     db.add_all(sections)
     db.flush()  # sections first: the chunks point to them
     db.add_all(chunks)
@@ -447,10 +471,10 @@ def _known_document(db: Session, document: Document) -> tuple[Document, Job, boo
     return document, job, True
 
 
-def _require_dev_until_auth() -> None:
+def _require_dev_until_auth(error: AppError) -> None:
     """Until #26 adds the admin check, the handbook endpoints only work in the dev environment."""
     if get_settings().environment != "dev":
-        raise errors.upload_not_allowed()
+        raise error
 
 
 def upload_document(
@@ -458,7 +482,7 @@ def upload_document(
 ) -> tuple[Document, Job, bool]:
     """Save an uploaded handbook and queue its ingestion. The last value is `already_ingested`."""
     settings = get_settings()
-    _require_dev_until_auth()
+    _require_dev_until_auth(errors.upload_not_allowed())
     if len(data) > settings.max_pdf_mb * 1024 * 1024:
         raise errors.file_too_large(settings.max_pdf_mb)
     # The client's file name and content type are not trusted: look at the first bytes
@@ -498,7 +522,7 @@ def upload_document(
 
 def document_status(db: Session, document_id: uuid.UUID) -> dict[str, Any]:
     """Where the ingestion of a document stands, with the counts of what was saved."""
-    _require_dev_until_auth()
+    _require_dev_until_auth(errors.status_not_allowed())
     document = db.get(Document, document_id)
     if document is None:
         raise not_found("Document")

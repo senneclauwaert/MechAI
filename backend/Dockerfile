@@ -20,6 +20,8 @@ RUN uv sync --locked --no-dev --no-cache
 # the internet. The setting docling_models_dir reads this variable.
 RUN docling-tools models download layout tableformer -o /opt/docling-models
 ENV DOCLING_MODELS_DIR=/opt/docling-models
+# The models are in the image: never let Hugging Face libraries reach for the internet
+ENV HF_HUB_OFFLINE=1
 
 # Used by compose.dev.yaml: the code is mounted from your laptop, so it is not copied in.
 FROM base AS dev
