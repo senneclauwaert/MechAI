@@ -51,7 +51,8 @@ services:
   # In dev the Vite server replaces nginx, so web only starts when asked:
   #   docker compose -f compose.yaml -f compose.dev.yaml --profile web up
   web:
-    profiles: ["web"]
-
+    profiles: ["web"] 
+    ports: !override
+      - "127.0.0.1:${WEB_PORT:-80}:80"
 volumes:
   node_modules:
