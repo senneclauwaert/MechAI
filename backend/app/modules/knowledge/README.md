@@ -4,7 +4,7 @@ Owns the handbook data: documents, pages, sections and chunks (schema `knowledge
 hybrid search over the chunks.
 
 **Now:** a playground to try RAG.
-- `POST /api/v1/knowledge/playground` with a title and a text: saves it as a chunk and queues an
+- `POST /api/v1/knowledge/playground` (dev only, like the upload) with a title and a text: saves it as a chunk and queues an
   `embed_text` job. The worker embeds it with Mistral (or the fake client without an API key).
 - `GET /api/v1/knowledge/search?q=...`: hybrid search (vector top 20 + full-text top 20, merged
   with RRF) and returns the best 5 chunks with both ranks, so you can see which search found what.
@@ -19,9 +19,11 @@ hybrid search over the chunks.
   `failed`), `error_code` when failed, and the number of pages, sections and chunks saved.
 - The worker job `ingest_document` (payload `{"document_id": ...}`) reads the PDF with Docling,
   saves the pages (text and PNG), sections and chunks, and embeds the chunks, in one transaction.
-  Before it parses anything it checks two settings: `ALLOW_EXTERNAL_EMBEDDINGS` (default `false`:
-  with the real Mistral client the job stops, because handbook text may go to Mistral only after
-  Supercube's written OK; the fake client always works) and `MAX_PDF_PAGES` (default 500).
+  Before it parses anything it checks two settings: `ALLOW_EXTERNAL_EMBEDDINGS` (default `false`)
+  and `MAX_PDF_PAGES` (default 500, also checked at upload). Every embedding goes through
+  `embed_chunks`, which only lets the real Mistral client work when `ALLOW_EXTERNAL_EMBEDDINGS`
+  and `AI_ENABLED` are both `true` (handbook text may go to Mistral only after Supercube's written
+  OK); the fake client always works. Page images are at most 6000 px on the longest side.
 
 **Re-upload rule** (SHA-256 of the file): the same file again returns the existing document and
 queues nothing, unless its job failed: then a new job is queued for the same document. Two uploads
@@ -38,7 +40,8 @@ of the same file at the same moment end up with one document (the database refus
 | `KNOWLEDGE_UPLOAD_NOT_ALLOWED` | Je mag geen documenten uploaden. | Vous n'avez pas le droit de televerser des documents. | You are not allowed to upload documents. |
 | `KNOWLEDGE_STATUS_NOT_ALLOWED` | Je mag de verwerkingsstatus niet bekijken. | Vous n'avez pas le droit de voir l'etat du traitement. | You are not allowed to see the ingestion status. |
 | `KNOWLEDGE_TOO_MANY_PAGES` | De PDF heeft te veel pagina's. | Le PDF a trop de pages. | The PDF has more than the allowed number of pages. |
-| `KNOWLEDGE_EXTERNAL_EMBEDDINGS_OFF` | Handbooktekst naar de AI-aanbieder sturen staat uit. | L'envoi du texte du manuel au fournisseur d'IA est desactive. | Sending handbook text to the AI provider is switched off. |
+| `KNOWLEDGE_EXTERNAL_EMBEDDINGS_OFF` | Tekst naar de AI-aanbieder sturen staat uit (ALLOW_EXTERNAL_EMBEDDINGS en AI_ENABLED). | L'envoi de texte au fournisseur d'IA est desactive (ALLOW_EXTERNAL_EMBEDDINGS et AI_ENABLED). | Sending text to the AI provider is off (needs ALLOW_EXTERNAL_EMBEDDINGS and AI_ENABLED). |
+| `KNOWLEDGE_PLAYGROUND_NOT_ALLOWED` | Je mag de playground niet gebruiken. | Vous n'avez pas le droit d'utiliser le playground. | You are not allowed to use the playground. |
 | `STORAGE_FILE_MISSING` | Dit bestand bestaat niet. | Ce fichier n'existe pas. | This file does not exist. |
 | `STORAGE_PATH_NOT_ALLOWED` | Deze bestandslocatie is niet toegelaten. | Cet emplacement de fichier n'est pas autorise. | This file location is not allowed. |
 

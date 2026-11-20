@@ -2,6 +2,7 @@
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -14,7 +15,7 @@ ROOT_ENV = Path(__file__).resolve().parents[2] / ".env"
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=(ROOT_ENV, ".env"), extra="ignore")
 
-    environment: str = "dev"  # dev or prod
+    environment: Literal["dev", "prod"] = "dev"
 
     # Database. Inside Docker the host is "db"; on your laptop it is "localhost".
     postgres_user: str = "mechai"
@@ -42,7 +43,8 @@ class Settings(BaseSettings):
     max_pdf_mb: int = Field(default=50, ge=1, le=50)
     page_image_dpi: int = Field(default=150, ge=72, le=300)
     max_pdf_pages: int = Field(default=500, ge=1, le=5000)
-    # Handbook text goes to the AI provider only after Supercube's written OK
+    # Handbook text goes to the AI provider only after Supercube's written OK; it also needs
+    # ai_enabled (a real client is never used for embeddings when either one is off)
     allow_external_embeddings: bool = False
     docling_models_dir: str | None = None
 

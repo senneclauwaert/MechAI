@@ -36,8 +36,14 @@ def too_many_pages(max_pages: int) -> AppError:
 def external_embeddings_off() -> AppError:
     return AppError(
         "KNOWLEDGE_EXTERNAL_EMBEDDINGS_OFF",
-        "Sending handbook text to the AI provider is switched off (ALLOW_EXTERNAL_EMBEDDINGS).",
+        "Sending text to the AI provider is off (needs ALLOW_EXTERNAL_EMBEDDINGS and AI_ENABLED).",
         409,
+    )
+
+
+def playground_not_allowed() -> AppError:
+    return AppError(
+        "KNOWLEDGE_PLAYGROUND_NOT_ALLOWED", "You are not allowed to use the playground.", 403
     )
 
 

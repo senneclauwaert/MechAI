@@ -20,7 +20,7 @@ from app.config import get_settings
 from app.core import jobs
 from app.core.errors import AppError, not_found
 from app.core.models import Job
-from app.llm import FakeLLM, get_llm
+from app.llm import FakeLLM, LLMClient, get_llm
 from app.modules.knowledge import errors
 from app.modules.knowledge.models import Chunk, Document, Page, Section
 from app.modules.storage import service as storage
@@ -30,6 +30,7 @@ log = logging.getLogger("mechai.knowledge")
 PLAYGROUND_TITLE = "Playground"
 RRF_K = 60  # standard value for Reciprocal Rank Fusion
 EMBED_BATCH = 64  # texts per embedding call
+MAX_PAGE_PIXELS = 6000  # longest side of a page image
 
 # "5.3.1 Bearings" -> number "5.3.1", title "Bearings"
 SECTION_HEADING = re.compile(r"^(\d+(?:\.\d+)*)\.?\s+(\S.*)$")
@@ -56,10 +57,17 @@ HIGH_VOLTAGE_WORDS = [
     "motor cables",
     "insulation",
 ]
-# "high voltage" may have any whitespace, a line break or a hyphen between the words
+# Between the words of a phrase ("motor cable") any whitespace is allowed, also a line break.
+# Between "high" and "voltage": whitespace, a hyphen, a Unicode hyphen or dash (U+2010 to U+2014),
+# the minus sign (U+2212) or a soft hyphen (U+00AD), in any mix.
 HIGH_VOLTAGE_PATTERN = re.compile(
     r"\b("
-    + "|".join([*(re.escape(word) for word in HIGH_VOLTAGE_WORDS), r"high[\s-]+voltage"])
+    + "|".join(
+        [
+            *(re.escape(word).replace(r"\ ", r"\s+") for word in HIGH_VOLTAGE_WORDS),
+            r"high[\s\-‐-—−­]+voltage",
+        ]
+    )
     + r")\b",
     re.IGNORECASE,
 )
@@ -231,6 +239,15 @@ def make_chunks(text: str, chunk_tokens: int, overlap_tokens: int) -> list[str]:
     return chunks
 
 
+def _check_external_embeddings(llm: LLMClient) -> None:
+    """A real AI client only gets text when both settings allow it; the fake client always may."""
+    settings = get_settings()
+    if isinstance(llm, FakeLLM):
+        return
+    if not (settings.allow_external_embeddings and settings.ai_enabled):
+        raise errors.external_embeddings_off()
+
+
 def embed_chunks(db: Session, chunks: list[Chunk]) -> int:
     """Set the embedding of every chunk. Returns how many texts were sent to the AI.
 
@@ -238,6 +255,7 @@ def embed_chunks(db: Session, chunks: list[Chunk]) -> int:
     not sent again. Does not commit.
     """
     llm = get_llm()
+    _check_external_embeddings(llm)
     model = llm.embedding_model
     hashes = {chunk.content_hash for chunk in chunks}
     rows = db.execute(
@@ -276,7 +294,8 @@ def _playground(db: Session) -> Document:
 
 
 def add_playground_text(db: Session, title: str, text: str) -> tuple[Chunk, uuid.UUID]:
-    """Save a text as one section with one chunk, and ask the worker to embed it."""
+    """Save a text as one section with one chunk, and ask the worker to embed it (dev only)."""
+    _require_dev_until_auth(errors.playground_not_allowed())
     doc = _playground(db)
     section = Section(document_id=doc.id, heading_path=title, text=text)
     db.add(section)
@@ -353,18 +372,28 @@ def parse_pdf(data: bytes) -> tuple[list[ParsedItem], dict[int, str]]:
         raise errors.parse_failed() from exc
 
 
+def render_scale(width_pt: float, height_pt: float, dpi: int) -> float:
+    """Pixels per point for a page image; a huge page is scaled down to MAX_PAGE_PIXELS."""
+    return min(dpi / 72, MAX_PAGE_PIXELS / max(width_pt, height_pt))
+
+
 def render_page_png(data: bytes, page_number: int, dpi: int) -> bytes:
     """Draw one page (numbered from 1) as a PNG."""
     import pypdfium2
 
-    pdf = pypdfium2.PdfDocument(data)
     try:
-        image = pdf[page_number - 1].render(scale=dpi / 72).to_pil()
+        pdf = pypdfium2.PdfDocument(data)
+        try:
+            page = pdf[page_number - 1]
+            width, height = page.get_size()
+            image = page.render(scale=render_scale(width, height, dpi)).to_pil()
+        finally:
+            pdf.close()
         buffer = io.BytesIO()
         image.save(buffer, format="PNG")
         return buffer.getvalue()
-    finally:
-        pdf.close()
+    except Exception as exc:  # pypdfium2 raises PdfiumError, but also plain errors for odd pages
+        raise errors.parse_failed() from exc
 
 
 def count_pdf_pages(data: bytes) -> int:
@@ -389,8 +418,7 @@ def ingest_document_job(db: Session, payload: dict[str, Any]) -> None:
         raise errors.document_not_found()
 
     # Checks first, so nothing is read, parsed or rendered for a job that cannot succeed
-    if not settings.allow_external_embeddings and not isinstance(get_llm(), FakeLLM):
-        raise errors.external_embeddings_off()
+    _check_external_embeddings(get_llm())
     data = storage.open_file(document.file_path or "")
     if count_pdf_pages(data) > settings.max_pdf_pages:
         raise errors.too_many_pages(settings.max_pdf_pages)
@@ -488,6 +516,8 @@ def upload_document(
     # The client's file name and content type are not trusted: look at the first bytes
     if not data.startswith(b"%PDF-"):
         raise errors.not_a_pdf()
+    if count_pdf_pages(data) > settings.max_pdf_pages:
+        raise errors.too_many_pages(settings.max_pdf_pages)
 
     file_hash = hashlib.sha256(data).hexdigest()
     existing = _find_by_hash(db, file_hash)

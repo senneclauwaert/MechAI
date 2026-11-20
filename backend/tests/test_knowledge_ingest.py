@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 from httpx import Response
+from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -19,6 +20,9 @@ from app.modules.knowledge.models import Chunk, Document, Page, Section
 from app.modules.knowledge.service import ParsedItem, SectionDraft
 from app.modules.storage import service as storage
 from app.worker import run_one
+
+REAL_RENDER = service.render_page_png  # the fixtures below replace it
+REAL_COUNT_PAGES = service.count_pdf_pages
 
 
 def _document(file_hash: str | None = None) -> Document:
@@ -153,6 +157,16 @@ def test_safety_level_uses_whole_words() -> None:
         "Wear gloves near the HV system",
         "High  voltage warning",
         "High\nvoltage warning",
+        "High­voltage warning",  # soft hyphen
+        "High‐voltage warning",
+        "High‑voltage warning",  # non-breaking hyphen
+        "High‒voltage warning",
+        "High–voltage warning",  # en dash
+        "High—voltage warning",  # em dash
+        "High−voltage warning",  # minus sign
+        "High -\nvoltage warning",  # a mix
+        "Check the motor  cable",  # double space
+        "Check the motor\ncables",  # line break
     ],
 )
 def test_safety_level_new_forms_are_high_voltage(text: str) -> None:
@@ -242,6 +256,81 @@ def test_embed_chunks_works_in_batches_of_64(db: Session, monkeypatch: pytest.Mo
     chunks = [_chunk(f"text number {n}") for n in range(130)]
     assert service.embed_chunks(db, chunks) == 130
     assert sizes == [64, 64, 2]
+
+
+class _RealLookingLLM:
+    """Not a FakeLLM: stands for the real provider. Counts the embed calls."""
+
+    embedding_model = "stub-model"
+
+    def __init__(self, works: bool) -> None:
+        self.works = works
+        self.embed_calls = 0
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        self.embed_calls += 1
+        assert self.works, "embed must not be called"
+        return FakeLLM().embed(texts)
+
+
+def _stub_llm(monkeypatch: pytest.MonkeyPatch, works: bool) -> _RealLookingLLM:
+    llm = _RealLookingLLM(works)
+    monkeypatch.setattr(service, "get_llm", lambda: llm)
+    return llm
+
+
+@pytest.mark.parametrize(("allow", "ai_enabled"), [(False, True), (True, False), (False, False)])
+def test_embed_chunks_refuses_a_real_client_unless_both_settings_are_on(
+    db: Session, monkeypatch: pytest.MonkeyPatch, allow: bool, ai_enabled: bool
+) -> None:
+    llm = _stub_llm(monkeypatch, works=False)
+    monkeypatch.setattr(get_settings(), "allow_external_embeddings", allow)
+    monkeypatch.setattr(get_settings(), "ai_enabled", ai_enabled)
+    with pytest.raises(AppError) as caught:
+        service.embed_chunks(db, [_chunk("some text")])
+    assert caught.value.code == "KNOWLEDGE_EXTERNAL_EMBEDDINGS_OFF"
+    assert llm.embed_calls == 0
+
+
+def test_embed_chunks_works_for_a_real_client_when_both_settings_are_on(
+    db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    llm = _stub_llm(monkeypatch, works=True)
+    monkeypatch.setattr(get_settings(), "allow_external_embeddings", True)
+    monkeypatch.setattr(get_settings(), "ai_enabled", True)
+    assert service.embed_chunks(db, [_chunk("some text")]) == 1
+    assert llm.embed_calls == 1
+
+
+def test_embed_chunks_works_for_the_fake_client_with_both_settings_off(
+    db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(get_settings(), "allow_external_embeddings", False)
+    monkeypatch.setattr(get_settings(), "ai_enabled", False)
+    assert service.embed_chunks(db, [_chunk("some text")]) == 1
+
+
+def test_playground_job_is_stopped_for_a_real_client_when_embeddings_are_off(
+    db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    llm = _stub_llm(monkeypatch, works=False)
+    monkeypatch.setattr(get_settings(), "allow_external_embeddings", False)
+    _, job_id = service.add_playground_text(db, "Title", "Some text")
+    assert run_one(db)
+    job = get_job(db, job_id)
+    assert job is not None and job.last_error is not None
+    assert job.last_error.startswith("KNOWLEDGE_EXTERNAL_EMBEDDINGS_OFF")
+    assert llm.embed_calls == 0
+
+
+def test_render_scale_of_a_normal_page_follows_the_dpi() -> None:
+    assert service.render_scale(595, 842, 150) == pytest.approx(150 / 72)  # A4 in points
+
+
+def test_render_scale_of_a_huge_page_keeps_the_longest_side_under_the_limit() -> None:
+    scale = service.render_scale(14400, 5000, 150)  # 200 inches wide
+    assert 14400 * scale == pytest.approx(service.MAX_PAGE_PIXELS)
+    assert scale < 150 / 72
 
 
 # --- the ingest job (Docling and pypdfium2 are replaced by fakes) ---
@@ -335,27 +424,6 @@ def test_ingest_job_parse_failure_is_stored_in_last_error(
     assert job.last_error.startswith("KNOWLEDGE_PARSE_FAILED")
 
 
-class _RealLookingLLM:
-    """Not a FakeLLM: stands for the real provider. Counts the embed calls."""
-
-    embedding_model = "stub-model"
-
-    def __init__(self, works: bool) -> None:
-        self.works = works
-        self.embed_calls = 0
-
-    def embed(self, texts: list[str]) -> list[list[float]]:
-        self.embed_calls += 1
-        assert self.works, "embed must not be called"
-        return FakeLLM().embed(texts)
-
-
-def _stub_llm(monkeypatch: pytest.MonkeyPatch, works: bool) -> _RealLookingLLM:
-    llm = _RealLookingLLM(works)
-    monkeypatch.setattr(service, "get_llm", lambda: llm)
-    return llm
-
-
 def _spy_pipeline(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """Records which of parse_pdf and render_page_png were called."""
     calls: list[str] = []
@@ -421,6 +489,18 @@ def test_render_failure_costs_no_embeddings(
     db.rollback()
     assert sizes == []
     assert _counts(db, ingest_document) == (0, 0, 0)
+
+
+def test_render_error_ends_the_job_with_parse_failed(
+    db: Session, ingest_document: Document, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # the real renderer on a file that is not a PDF (the fixture saved b"fake file")
+    monkeypatch.setattr(service, "render_page_png", REAL_RENDER)
+    job = enqueue(db, "ingest_document", {"document_id": str(ingest_document.id)})
+    assert run_one(db)
+    db.refresh(job)
+    assert job.last_error is not None
+    assert job.last_error.startswith("KNOWLEDGE_PARSE_FAILED")
 
 
 def test_too_many_pages_stops_before_docling(
@@ -586,13 +666,39 @@ def test_upload_is_refused_in_prod(
     assert response.json()["error"]["code"] == "KNOWLEDGE_UPLOAD_NOT_ALLOWED"
 
 
-def test_upload_is_refused_when_environment_is_not_dev(
+def test_environment_must_be_dev_or_prod() -> None:
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, postgres_password="x", environment="production")  # type: ignore[call-arg,arg-type]
+
+
+def test_too_many_pages_is_refused_at_upload(
+    client: TestClient, db: Session, upload_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(get_settings(), "max_pdf_pages", 3)
+    monkeypatch.setattr(service, "count_pdf_pages", lambda data: 4)
+    documents_before = db.scalar(select(func.count()).select_from(Document))
+    response = _upload(client)
+    assert response.status_code == 413
+    assert response.json()["error"]["code"] == "KNOWLEDGE_TOO_MANY_PAGES"
+    assert db.scalar(select(func.count()).select_from(Document)) == documents_before
+    assert not (upload_env / "knowledge").exists()
+
+
+def test_unreadable_pdf_is_refused_at_upload(
     client: TestClient, upload_env: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(get_settings(), "environment", "production")
+    # the real page counter, on a file that only starts like a PDF
+    monkeypatch.setattr(service, "count_pdf_pages", REAL_COUNT_PAGES)
     response = _upload(client)
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "KNOWLEDGE_PARSE_FAILED"
+
+
+def test_playground_is_refused_in_prod(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(get_settings(), "environment", "prod")
+    response = client.post("/api/v1/knowledge/playground", json={"title": "T", "text": "Some text"})
     assert response.status_code == 403
-    assert response.json()["error"]["code"] == "KNOWLEDGE_UPLOAD_NOT_ALLOWED"
+    assert response.json()["error"]["code"] == "KNOWLEDGE_PLAYGROUND_NOT_ALLOWED"
 
 
 def test_status_is_refused_in_prod(
