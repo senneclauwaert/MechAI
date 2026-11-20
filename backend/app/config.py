@@ -3,7 +3,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import URL
 
@@ -49,6 +49,12 @@ class Settings(BaseSettings):
 
     auth_mode: str = "dev"  # dev or pin
     supercube_client: str = "fake"  # fake or real
+
+    @field_validator("docling_models_dir")
+    @classmethod
+    def empty_models_dir_is_none(cls, value: str | None) -> str | None:
+        # An empty variable in .env must not hide the folder set in the Docker image
+        return value or None
 
     @property
     def db_url(self) -> str:

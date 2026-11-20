@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.core.errors import AppError
 from app.core.jobs import enqueue, get_job
 from app.llm import FakeLLM
@@ -139,6 +139,47 @@ def test_safety_level_uses_whole_words() -> None:
     assert service.safety_level_for("Check the High-Voltage cable") == "high_voltage"
     assert service.safety_level_for("Rear axle bearing") == "normal"
     assert service.safety_level_for("batteryless") == "normal"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Check the controllers",
+        "Two chargers",
+        "Replace the fuses",
+        "The contactors click",
+        "Both inverters",
+        "Inspect the motor cables",
+        "Wear gloves near the HV system",
+        "High  voltage warning",
+        "High\nvoltage warning",
+    ],
+)
+def test_safety_level_new_forms_are_high_voltage(text: str) -> None:
+    assert service.safety_level_for(text) == "high_voltage"
+
+
+def test_safety_level_hv_is_a_whole_word() -> None:
+    assert service.safety_level_for("The hvac duct") == "normal"
+
+
+def test_keyword_only_in_parent_heading_marks_the_section() -> None:
+    items = [
+        ParsedItem("heading", "6 Battery", 1),
+        ParsedItem("text", "Intro.", 1),
+        ParsedItem("heading", "6.2 Removal", 2),
+        ParsedItem("text", "Lift the cover.", 2),
+    ]
+    sections = service.build_sections(items, "Manual")
+    assert [s.safety_level for s in sections] == ["high_voltage", "high_voltage"]
+
+
+def test_split_parts_keep_the_level_of_the_whole_section() -> None:
+    paragraphs = ["Disconnect the battery."] + ["word " * 30] * 3
+    section = SectionDraft("1", "1 Big", 1, 1, "\n\n".join(paragraphs), "high_voltage")
+    parts = service.split_long_sections([section], max_tokens=100)
+    assert len(parts) > 1
+    assert all(p.safety_level == "high_voltage" for p in parts)
 
 
 def test_context_header() -> None:
@@ -384,14 +425,19 @@ def test_upload_that_loses_a_race_returns_the_winner(
     db.add(winner)
     db.commit()
 
-    # The first lookup finds nothing, as if the other upload committed just after it
+    # The first lookup finds nothing, as if the other upload committed just after it;
+    # the second lookup (after the IntegrityError) is the real one
     real_lookup = service._find_by_hash
-    lookups = iter([None])
-    monkeypatch.setattr(
-        service, "_find_by_hash", lambda db, h: next(lookups, None) or real_lookup(db, h)
-    )
+    calls: list[str] = []
+
+    def lookup(session: Session, file_hash: str) -> Document | None:
+        calls.append(file_hash)
+        return None if len(calls) == 1 else real_lookup(session, file_hash)
+
+    monkeypatch.setattr(service, "_find_by_hash", lookup)
 
     response = _upload(client)
+    assert len(calls) == 2
     assert response.status_code == 200
     assert response.json()["already_ingested"] is True
     assert response.json()["document_id"] == str(winner.id)
@@ -420,6 +466,29 @@ def test_upload_is_refused_in_prod(
     response = _upload(client)
     assert response.status_code == 403
     assert response.json()["error"]["code"] == "KNOWLEDGE_UPLOAD_NOT_ALLOWED"
+
+
+def test_upload_is_refused_when_environment_is_not_dev(
+    client: TestClient, upload_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(get_settings(), "environment", "production")
+    response = _upload(client)
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "KNOWLEDGE_UPLOAD_NOT_ALLOWED"
+
+
+def test_status_is_refused_in_prod(
+    client: TestClient, upload_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    document_id = _upload(client).json()["document_id"]
+    monkeypatch.setattr(get_settings(), "environment", "prod")
+    response = client.get(f"/api/v1/knowledge/documents/{document_id}/status")
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "KNOWLEDGE_UPLOAD_NOT_ALLOWED"
+
+
+def test_empty_docling_models_dir_is_none() -> None:
+    assert Settings(docling_models_dir="", postgres_password="x").docling_models_dir is None  # type: ignore[arg-type]
 
 
 def test_upload_without_title_is_refused(client: TestClient, upload_env: Path) -> None:

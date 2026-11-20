@@ -40,19 +40,28 @@ HIGH_VOLTAGE_WORDS = [
     "battery",
     "batteries",
     "bms",
+    "hv",
     "charger",
+    "chargers",
     "charging",
     "controller",
-    "high voltage",
-    "high-voltage",
+    "controllers",
     "inverter",
+    "inverters",
     "contactor",
+    "contactors",
     "fuse",
+    "fuses",
     "motor cable",
+    "motor cables",
     "insulation",
 ]
+# "high voltage" may have any whitespace, a line break or a hyphen between the words
 HIGH_VOLTAGE_PATTERN = re.compile(
-    r"\b(" + "|".join(re.escape(word) for word in HIGH_VOLTAGE_WORDS) + r")\b", re.IGNORECASE
+    r"\b("
+    + "|".join([*(re.escape(word) for word in HIGH_VOLTAGE_WORDS), r"high[\s-]+voltage"])
+    + r")\b",
+    re.IGNORECASE,
 )
 
 
@@ -74,6 +83,7 @@ class SectionDraft:
     page_start: int
     page_end: int
     text: str
+    safety_level: str = "normal"  # of the whole section, so every part of a split gets the same
 
 
 def approx_tokens(text: str) -> int:
@@ -114,7 +124,9 @@ def build_sections(items: list[ParsedItem], document_title: str) -> list[Section
             parents = [titles[n] for n in _parent_numbers(number) if n in titles]
             path = " > ".join([*parents, title])
         pages = [item.page for item in group_items]
-        sections.append(SectionDraft(number, path, min(pages), max(pages), text))
+        # The heading counts too: "6 Battery > 6.2 Removal" is high voltage whatever the body says
+        level = safety_level_for(path + "\n" + text)
+        sections.append(SectionDraft(number, path, min(pages), max(pages), text, level))
     return sections
 
 
@@ -141,6 +153,7 @@ def split_long_sections(sections: list[SectionDraft], max_tokens: int) -> list[S
                     section.page_start,
                     section.page_end,
                     "\n\n".join(part),
+                    section.safety_level,
                 )
             )
     return result
@@ -377,7 +390,7 @@ def ingest_document_job(db: Session, payload: dict[str, Any]) -> None:
             page_end=draft.page_end,
             text=draft.text,
             token_count=approx_tokens(draft.text),
-            safety_level=safety_level_for(draft.text),
+            safety_level=draft.safety_level,
         )
         sections.append(section)
         header = context_header(document.title, draft)
@@ -434,14 +447,18 @@ def _known_document(db: Session, document: Document) -> tuple[Document, Job, boo
     return document, job, True
 
 
+def _require_dev_until_auth() -> None:
+    """Until #26 adds the admin check, the handbook endpoints only work in the dev environment."""
+    if get_settings().environment != "dev":
+        raise errors.upload_not_allowed()
+
+
 def upload_document(
     db: Session, data: bytes, title: str, revision: str | None, kart_model: str | None
 ) -> tuple[Document, Job, bool]:
     """Save an uploaded handbook and queue its ingestion. The last value is `already_ingested`."""
     settings = get_settings()
-    # Until #26 adds the admin check, uploading is only allowed outside production
-    if settings.environment == "prod":
-        raise errors.upload_not_allowed()
+    _require_dev_until_auth()
     if len(data) > settings.max_pdf_mb * 1024 * 1024:
         raise errors.file_too_large(settings.max_pdf_mb)
     # The client's file name and content type are not trusted: look at the first bytes
@@ -481,6 +498,7 @@ def upload_document(
 
 def document_status(db: Session, document_id: uuid.UUID) -> dict[str, Any]:
     """Where the ingestion of a document stands, with the counts of what was saved."""
+    _require_dev_until_auth()
     document = db.get(Document, document_id)
     if document is None:
         raise not_found("Document")
