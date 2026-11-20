@@ -15,11 +15,15 @@ WORKDIR /app
 # when only the code changes. The virtual environment lives in /opt/venv, outside /app,
 # so mounting your code over /app in dev does not hide it.
 COPY pyproject.toml uv.lock .python-version ./
-RUN uv sync --locked --no-dev
+RUN uv sync --locked --no-dev --no-cache
+# Docling's layout and table models (OCR is off), baked into the image so the worker never needs
+# the internet. The setting docling_models_dir reads this variable.
+RUN docling-tools models download layout tableformer -o /opt/docling-models
+ENV DOCLING_MODELS_DIR=/opt/docling-models
 
 # Used by compose.dev.yaml: the code is mounted from your laptop, so it is not copied in.
 FROM base AS dev
-RUN uv sync --locked
+RUN uv sync --locked --no-cache
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 
 # Used on the server.

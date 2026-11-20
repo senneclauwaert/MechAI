@@ -1,14 +1,20 @@
 import uuid
+from pathlib import Path
 
 import pytest
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
+from app.core.errors import AppError
 from app.core.jobs import enqueue, get_job
 from app.llm import FakeLLM
-from app.modules.knowledge import service
+from app.modules.knowledge import errors, service
 from app.modules.knowledge.models import Chunk, Document, Page, Section
 from app.modules.knowledge.service import ParsedItem, SectionDraft
+from app.modules.storage import service as storage
+from app.worker import run_one
 
 
 def _document(file_hash: str | None = None) -> Document:
@@ -191,3 +197,99 @@ def test_embed_chunks_works_in_batches_of_64(db: Session, monkeypatch: pytest.Mo
     chunks = [_chunk(f"text number {n}") for n in range(130)]
     assert service.embed_chunks(db, chunks) == 130
     assert sizes == [64, 64, 2]
+
+
+# --- the ingest job (Docling and pypdfium2 are replaced by fakes) ---
+
+
+def _fake_parse(data: bytes) -> tuple[list[ParsedItem], dict[int, str]]:
+    items = [
+        ParsedItem("heading", "5 Rear axle", 1),
+        ParsedItem("text", "Replace the axle bearing.", 1),
+        ParsedItem("heading", "5.3 Battery", 2),
+        ParsedItem("text", "Disconnect the battery first.", 2),
+        ParsedItem("table", "| part | torque |\n| bolt | 25 Nm |", 3),
+    ]
+    return items, {1: "Replace the axle bearing.", 2: "Disconnect the battery first.", 3: ""}
+
+
+@pytest.fixture
+def ingest_document(db: Session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Document:
+    monkeypatch.setattr(get_settings(), "files_dir", str(tmp_path))
+    monkeypatch.setattr(service, "parse_pdf", _fake_parse)
+    monkeypatch.setattr(service, "render_page_png", lambda data, number, dpi: b"png%d" % number)
+    path = storage.save_file("knowledge/source", "manual.bin", b"fake file")
+    document = Document(title="Test manual", file_path=path)
+    db.add(document)
+    db.flush()
+    return document
+
+
+def _counts(db: Session, document: Document) -> tuple[int, int, int]:
+    pages = db.scalar(select(func.count()).where(Page.document_id == document.id))
+    sections = db.scalar(select(func.count()).where(Section.document_id == document.id))
+    chunks = db.scalar(
+        select(func.count())
+        .select_from(Chunk)
+        .join(Section, Chunk.section_id == Section.id)
+        .where(Section.document_id == document.id)
+    )
+    return pages or 0, sections or 0, chunks or 0
+
+
+def test_ingest_job_saves_pages_sections_and_chunks(
+    db: Session, ingest_document: Document, tmp_path: Path
+) -> None:
+    service.ingest_document_job(db, {"document_id": str(ingest_document.id)})
+
+    assert _counts(db, ingest_document) == (3, 2, 2)
+    for number in (1, 2, 3):
+        png = tmp_path / "knowledge" / str(ingest_document.id) / f"page-{number:03}.png"
+        assert png.read_bytes() == b"png%d" % number
+    page = db.scalars(select(Page).where(Page.page_number == 1)).one()
+    assert page.image_path == f"knowledge/{ingest_document.id}/page-001.png"
+    assert page.text == "Replace the axle bearing."
+
+    sections = db.scalars(select(Section).where(Section.document_id == ingest_document.id)).all()
+    levels = {section.section_number: section.safety_level for section in sections}
+    assert levels == {"5": "normal", "5.3": "high_voltage"}
+
+    chunks = db.scalars(
+        select(Chunk).join(Section).where(Section.document_id == ingest_document.id)
+    )
+    for chunk in chunks:
+        assert chunk.text.startswith("Test manual > 5 Rear axle")
+        assert chunk.embedding is not None
+
+
+def test_ingest_job_retry_is_clean_and_embeds_nothing(
+    db: Session, ingest_document: Document, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = {"document_id": str(ingest_document.id)}
+    service.ingest_document_job(db, payload)
+    first = _counts(db, ingest_document)
+
+    sizes = _spy_embed(monkeypatch)
+    service.ingest_document_job(db, payload)
+    assert _counts(db, ingest_document) == first
+    assert sum(sizes) == 0
+
+
+def test_ingest_job_parse_failure_is_stored_in_last_error(
+    db: Session, ingest_document: Document, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(data: bytes) -> tuple[list[ParsedItem], dict[int, str]]:
+        raise errors.parse_failed()
+
+    monkeypatch.setattr(service, "parse_pdf", broken)
+    job = enqueue(db, "ingest_document", {"document_id": str(ingest_document.id)})
+    assert run_one(db)
+    db.refresh(job)
+    assert job.last_error is not None
+    assert job.last_error.startswith("KNOWLEDGE_PARSE_FAILED")
+
+
+def test_ingest_job_missing_document(db: Session) -> None:
+    with pytest.raises(AppError) as caught:
+        service.ingest_document_job(db, {"document_id": str(uuid.uuid4())})
+    assert caught.value.code == "KNOWLEDGE_DOCUMENT_NOT_FOUND"

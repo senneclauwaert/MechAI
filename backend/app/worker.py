@@ -38,6 +38,7 @@ HANDLERS: dict[str, Callable[[Session, dict[str, Any]], None]] = {
     "echo": echo,
     "fail": fail,
     "embed_text": knowledge.embed_text_job,
+    "ingest_document": knowledge.ingest_document_job,
 }
 
 running = True

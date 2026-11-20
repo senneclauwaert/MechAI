@@ -5,18 +5,24 @@ The real ingestion (PDF -> pages -> sections -> chunks) comes in its own issue.
 """
 
 import hashlib
+import io
+import logging
 import re
 import uuid
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.core import jobs
 from app.llm import get_llm
 from app.modules.knowledge import errors
-from app.modules.knowledge.models import Chunk, Document, Section
+from app.modules.knowledge.models import Chunk, Document, Page, Section
+from app.modules.storage import service as storage
+
+log = logging.getLogger("mechai.knowledge")
 
 PLAYGROUND_TITLE = "Playground"
 RRF_K = 60  # standard value for Reciprocal Rank Fusion
@@ -279,6 +285,131 @@ def embed_text_job(db: Session, payload: dict[str, Any]) -> None:
         raise errors.chunk_not_found()
     embed_chunks(db, [chunk])
     db.commit()
+
+
+def parse_pdf(data: bytes) -> tuple[list[ParsedItem], dict[int, str]]:
+    """Read a PDF with Docling. Returns the items in reading order and the text of every page."""
+    # Imported here so the api and the tests start fast (the same pattern as llm.py)
+    from docling.datamodel.base_models import DocumentStream, InputFormat
+    from docling.datamodel.pipeline_options import PdfPipelineOptions
+    from docling.document_converter import DocumentConverter, PdfFormatOption
+    from docling_core.types.doc import (
+        DocItem,
+        SectionHeaderItem,
+        TableItem,
+        TextItem,
+        TitleItem,
+    )
+
+    settings = get_settings()
+    try:
+        options = PdfPipelineOptions(do_ocr=False, do_table_structure=True)
+        if settings.docling_models_dir:
+            options.artifacts_path = settings.docling_models_dir
+        converter = DocumentConverter(
+            format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=options)}
+        )
+        stream = DocumentStream(name="upload.pdf", stream=io.BytesIO(data))
+        doc = converter.convert(stream).document
+
+        items: list[ParsedItem] = []
+        page_texts = {number: "" for number in range(1, doc.num_pages() + 1)}
+        for item, _level in doc.iterate_items():  # body only: page headers and footers are skipped
+            if not isinstance(item, DocItem) or not item.prov:
+                continue
+            kind: Literal["heading", "text", "table"]
+            if isinstance(item, TableItem):
+                kind, text = "table", item.export_to_markdown(doc=doc)
+            elif isinstance(item, SectionHeaderItem | TitleItem):
+                kind, text = "heading", item.text
+            elif isinstance(item, TextItem):
+                kind, text = "text", item.text
+            else:
+                continue  # pictures
+            text = text.strip()
+            if not text:
+                continue
+            page = item.prov[0].page_no
+            items.append(ParsedItem(kind, text, page))
+            page_texts[page] = (page_texts.get(page, "") + "\n\n" + text).strip()
+        return items, page_texts
+    except Exception as exc:  # Docling raises many kinds; the worker logs this one with its trace
+        raise errors.parse_failed() from exc
+
+
+def render_page_png(data: bytes, page_number: int, dpi: int) -> bytes:
+    """Draw one page (numbered from 1) as a PNG."""
+    import pypdfium2
+
+    pdf = pypdfium2.PdfDocument(data)
+    try:
+        image = pdf[page_number - 1].render(scale=dpi / 72).to_pil()
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        return buffer.getvalue()
+    finally:
+        pdf.close()
+
+
+def ingest_document_job(db: Session, payload: dict[str, Any]) -> None:
+    """Worker job: PDF -> pages (text + PNG) -> sections -> chunks -> embeddings. One commit."""
+    settings = get_settings()
+    document = db.get(Document, uuid.UUID(payload["document_id"]))
+    if document is None:
+        raise errors.document_not_found()
+
+    data = storage.open_file(document.file_path or "")
+    items, page_texts = parse_pdf(data)
+
+    drafts = split_long_sections(build_sections(items, document.title), settings.section_max_tokens)
+    sections: list[Section] = []
+    chunks: list[Chunk] = []
+    for draft in drafts:
+        section = Section(
+            id=uuid.uuid4(),  # set now, so the chunks can point to it before anything is saved
+            document_id=document.id,
+            section_number=draft.number,
+            heading_path=draft.heading_path,
+            page_start=draft.page_start,
+            page_end=draft.page_end,
+            text=draft.text,
+            token_count=approx_tokens(draft.text),
+            safety_level=safety_level_for(draft.text),
+        )
+        sections.append(section)
+        header = context_header(document.title, draft)
+        for piece in make_chunks(draft.text, settings.chunk_tokens, settings.chunk_overlap_tokens):
+            text = f"{header}\n{piece}"
+            chunks.append(
+                Chunk(
+                    section_id=section.id,
+                    text=text,
+                    content_hash=content_hash(text),
+                    token_count=approx_tokens(text),
+                )
+            )
+    # Embed before the old chunks are deleted, so a retry reuses their embeddings
+    embedded = embed_chunks(db, chunks)
+
+    # a retry starts clean; the chunks go with their sections (ON DELETE CASCADE)
+    db.execute(delete(Section).where(Section.document_id == document.id))
+    db.execute(delete(Page).where(Page.document_id == document.id))
+    for number, text in page_texts.items():
+        png = render_page_png(data, number, settings.page_image_dpi)
+        image_path = storage.save_file(f"knowledge/{document.id}", f"page-{number:03}.png", png)
+        db.add(Page(document_id=document.id, page_number=number, image_path=image_path, text=text))
+    db.add_all(sections)
+    db.flush()  # sections first: the chunks point to them
+    db.add_all(chunks)
+    db.commit()
+    log.info(
+        "ingested document %s: %d pages, %d sections, %d chunks, %d embedded",
+        document.id,
+        len(page_texts),
+        len(drafts),
+        len(chunks),
+        embedded,
+    )
 
 
 def search(db: Session, question: str, limit: int = 5) -> list[dict[str, Any]]:
