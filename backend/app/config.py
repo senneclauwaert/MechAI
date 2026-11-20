@@ -4,7 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import URL
 
@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     # Handbook text goes to the AI provider only after Supercube's written OK; it also needs
     # ai_enabled (a real client is never used for embeddings when either one is off)
     allow_external_embeddings: bool = False
-    docling_models_dir: str | None = None
+    docling_models_dir: str = "/opt/docling-models"
 
     # Worker
     worker_poll_seconds: float = 5.0
@@ -57,9 +57,15 @@ class Settings(BaseSettings):
 
     @field_validator("docling_models_dir")
     @classmethod
-    def empty_models_dir_is_none(cls, value: str | None) -> str | None:
-        # An empty variable in .env must not hide the folder set in the Docker image
-        return value or None
+    def empty_models_dir_uses_baked_models(cls, value: str) -> str:
+        # Compose can override the image environment with an empty value.
+        return value or "/opt/docling-models"
+
+    @model_validator(mode="after")
+    def validate_chunk_overlap(self) -> "Settings":
+        if self.chunk_overlap_tokens >= self.chunk_tokens:
+            raise ValueError("chunk_overlap_tokens must be strictly less than chunk_tokens")
+        return self
 
     @property
     def db_url(self) -> str:

@@ -8,7 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 from httpx import Response
 from pydantic import ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -701,8 +701,11 @@ def test_status_is_refused_in_prod(
     assert response.json()["error"]["code"] == "KNOWLEDGE_STATUS_NOT_ALLOWED"
 
 
-def test_empty_docling_models_dir_is_none() -> None:
-    assert Settings(docling_models_dir="", postgres_password="x").docling_models_dir is None  # type: ignore[arg-type]
+def test_empty_docling_models_dir_uses_baked_models() -> None:
+    assert (
+        Settings(docling_models_dir="", postgres_password="x").docling_models_dir
+        == "/opt/docling-models"
+    )  # type: ignore[arg-type]
 
 
 def test_upload_without_title_is_refused(client: TestClient, upload_env: Path) -> None:
@@ -747,3 +750,57 @@ def test_status_of_unknown_document_is_404(client: TestClient) -> None:
     response = client.get(f"/api/v1/knowledge/documents/{uuid.uuid4()}/status")
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "CORE_NOT_FOUND"
+
+
+def test_section_bounds_include_heading_page() -> None:
+    (section,) = service.build_sections(
+        [
+            ParsedItem("heading", "1 Overview", 1),
+            ParsedItem("text", "Body on next page.", 2),
+        ],
+        "Manual",
+    )
+    assert (section.page_start, section.page_end) == (1, 2)
+    assert section.text == "Body on next page."
+
+
+def test_queue_ingest_commits_document_and_job_together(db: Session) -> None:
+    document = _document()
+    db.add(document)
+    db.flush()
+    commits = []
+
+    def check_commit(session: Session) -> None:
+        assert document.job_id is not None
+        assert get_job(session, document.job_id) is not None
+        commits.append(document.job_id)
+
+    event.listen(db, "before_commit", check_commit)
+    try:
+        job = service._queue_ingest(db, document)
+    finally:
+        event.remove(db, "before_commit", check_commit)
+    assert commits == [job.id]
+
+
+def test_enqueue_can_be_rolled_back(db: Session) -> None:
+    job = enqueue(db, "test", commit=False)
+    job_id = job.id
+    assert job_id is not None
+    db.rollback()
+    assert get_job(db, job_id) is None
+
+
+def test_known_document_refreshes_stale_job_pointer(db: Session) -> None:
+    document = _document()
+    db.add(document)
+    db.flush()
+    job = enqueue(db, "ingest_document", commit=False)
+    db.execute(
+        update(Document).where(Document.id == document.id).values(job_id=job.id),
+        execution_options={"synchronize_session": False},
+    )
+    assert document.job_id is None
+    _, returned_job, known = service._known_document(db, document)
+    assert known
+    assert returned_job.id == job.id

@@ -116,14 +116,15 @@ def build_sections(items: list[ParsedItem], document_title: str) -> list[Section
     for item in items:
         match = SECTION_HEADING.match(item.text) if item.kind == "heading" else None
         if match:
-            groups.append((match.group(1), item.text, []))
+            groups.append((match.group(1), item.text, [item]))
         else:
             groups[-1][2].append(item)  # also a heading without a number: it stays text
 
     titles = {number: title for number, title, _ in groups if number}
     sections = []
     for number, title, group_items in groups:
-        text = "\n\n".join(item.text for item in group_items)
+        body_items = group_items[1:] if number is not None else group_items
+        text = "\n\n".join(item.text for item in body_items)
         if not text.strip():
             continue
         if number is None:
@@ -485,7 +486,7 @@ def _find_by_hash(db: Session, file_hash: str) -> Document | None:
 
 
 def _queue_ingest(db: Session, document: Document) -> Job:
-    job = jobs.enqueue(db, "ingest_document", {"document_id": str(document.id)})
+    job = jobs.enqueue(db, "ingest_document", {"document_id": str(document.id)}, commit=False)
     document.job_id = job.id
     db.commit()
     return job
@@ -493,6 +494,7 @@ def _queue_ingest(db: Session, document: Document) -> Job:
 
 def _known_document(db: Session, document: Document) -> tuple[Document, Job, bool]:
     """The file was uploaded before: queue a new job only when the last one failed (or is gone)."""
+    db.refresh(document, with_for_update=True)
     job = jobs.get_job(db, document.job_id) if document.job_id else None
     if job is None or job.status == "failed":
         job = _queue_ingest(db, document)
