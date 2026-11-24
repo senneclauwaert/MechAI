@@ -4,8 +4,9 @@ Rows are built by hand with the fake embedding client, inside the rolled-back tr
 `db` fixture. The texts are short kart texts written for these tests.
 """
 
+import unicodedata
 import uuid
-from typing import NoReturn
+from typing import Any, NoReturn
 
 import pytest
 from sqlalchemy import delete
@@ -456,8 +457,65 @@ def test_control_characters_are_removed_from_all_inputs(empty_db: Session) -> No
     assert [c.chunk_id for c in only_control.chunks] == [chunk.id]
 
 
+# A fake client that remembers the texts it was asked to embed.
+class RecordingLLM(FakeLLM):
+    def __init__(self) -> None:
+        self.embedded: list[str] = []
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        self.embedded.extend(texts)
+        return super().embed(texts)
+
+
+def test_inputs_are_cleaned_before_embedding_and_text_search(
+    empty_db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    section = make_section(empty_db, make_document(empty_db))
+    make_chunk(empty_db, section, "Order bearing AB-1234 for the rear axle.")
+    llm = RecordingLLM()
+    monkeypatch.setattr(service, "get_llm", lambda: llm)
+    seen: dict[str, Any] = {}
+    real_input, real_hits = service._text_search_input, service._text_hits
+
+    # Spies: record what the private helpers receive, then call the real ones.
+    def spy_input(keywords: list[str], query: str) -> str:
+        seen["keywords"], seen["query"] = keywords, query
+        return real_input(keywords, query)
+
+    def spy_hits(
+        db: Session, base: Any, ts_input: str, part_numbers: list[str] | None = None
+    ) -> list[Chunk]:
+        seen["parts"] = part_numbers
+        return real_hits(db, base, ts_input, part_numbers)
+
+    monkeypatch.setattr(service, "_text_search_input", spy_input)
+    monkeypatch.setattr(service, "_text_hits", spy_hits)
+
+    service.retrieve_sections(
+        empty_db, "rear\x00 axle\x01 bearing", ["ax\x00le", "\x07"], ["AB-\x001234", "\x00"]
+    )
+
+    assert llm.embedded == ["rear  axle  bearing"]
+    assert not any(unicodedata.category(c) == "Cc" for c in llm.embedded[0])
+    assert seen["query"] == "rear  axle  bearing"
+    assert seen["keywords"] == ["ax le", " "]
+    assert seen["parts"] == ["AB- 1234"]
+
+
+def test_lone_surrogates_do_not_cause_an_error(empty_db: Session) -> None:
+    section = make_section(empty_db, make_document(empty_db))
+    chunk = make_chunk(empty_db, section, "Order bearing AB-1234 for the rear axle.")
+
+    result = service.retrieve_sections(
+        empty_db, "rear \ud800 axle", ["ax\udc00le", "bearing"], ["AB-\ud8001234"]
+    )
+
+    assert result.chunks[0].chunk_id == chunk.id
+
+
 def test_clean_replaces_control_characters_by_a_space() -> None:
     assert service._clean("a\x00b\tc\nd\x7fe") == "a b c d e"
+    assert service._clean("a\ud800b\udfffc") == "a b c"
     assert service._clean("Axle-é 12") == "Axle-é 12"
 
 

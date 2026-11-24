@@ -49,12 +49,14 @@ def test_assistant_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
         "ANSWER_SOURCE_TOKENS",
         "ANSWER_MAX_TOKENS",
         "AI_TIMEOUT_SECONDS",
+        "EMBED_BATCH_TIMEOUT_SECONDS",
         "DAILY_QUESTION_CAP",
     ]:
         monkeypatch.delenv(name, raising=False)
     s = Settings(_env_file=None, postgres_password="x")  # type: ignore[call-arg,arg-type]
     assert (s.refusal_threshold, s.answer_sections, s.answer_source_tokens) == (0.70, 5, 6000)
     assert (s.answer_max_tokens, s.ai_timeout_seconds, s.daily_question_cap) == (800, 20, 300)
+    assert s.embed_batch_timeout_seconds == 60
 
 
 @pytest.mark.parametrize(
@@ -70,6 +72,8 @@ def test_assistant_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
         {"answer_max_tokens": 4001},
         {"ai_timeout_seconds": 0},
         {"ai_timeout_seconds": 121},
+        {"embed_batch_timeout_seconds": 0},
+        {"embed_batch_timeout_seconds": 601},
         {"daily_question_cap": 0},
         {"daily_question_cap": 100001},
     ],

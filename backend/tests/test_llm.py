@@ -1,4 +1,4 @@
-"""Tests for the AI client: the fake chat and MistralLLM.chat with a mocked provider client."""
+"""Tests for the AI client: the fake chat, MistralLLM.chat and MistralLLM.embed (mocked client)."""
 
 import json
 from types import SimpleNamespace
@@ -14,7 +14,9 @@ from app.llm import ChatResult, FakeLLM, MistralLLM
 # A MistralLLM without the real SDK client: only the mocked client and the settings are set.
 def make_llm(response: Any = None, error: Exception | None = None) -> MistralLLM:
     llm = MistralLLM.__new__(MistralLLM)
-    llm.settings = SimpleNamespace(chat_model="m", ai_timeout_seconds=7)  # type: ignore[assignment]
+    llm.settings = SimpleNamespace(
+        chat_model="m", ai_timeout_seconds=7, embed_batch_timeout_seconds=70
+    )  # type: ignore[assignment]
     llm.client = MagicMock()
     if error:
         llm.client.chat.complete.side_effect = error
@@ -25,7 +27,7 @@ def make_llm(response: Any = None, error: Exception | None = None) -> MistralLLM
 
 # A provider response with one choice (content may be empty), optional usage and finish reason.
 def response(
-    content: str | None, usage: Any = None, choices: bool = True, finish: str = "stop"
+    content: str | None, usage: Any = None, choices: bool = True, finish: str | None = "stop"
 ) -> SimpleNamespace:
     message = SimpleNamespace(content=content)
     choice = SimpleNamespace(message=message, finish_reason=finish)
@@ -68,9 +70,17 @@ def test_mistral_chat_without_usage_gives_zero_tokens() -> None:
 
 
 @pytest.mark.parametrize(
-    ("finish", "expected"), [("length", True), ("model_length", True), ("stop", False)]
+    ("finish", "expected"),
+    [
+        ("stop", False),
+        ("length", True),
+        ("model_length", True),
+        ("error", True),
+        ("tool_calls", True),
+        (None, True),
+    ],
 )
-def test_mistral_chat_marks_cut_off_answers(finish: str, expected: bool) -> None:
+def test_mistral_chat_marks_unfinished_answers(finish: str | None, expected: bool) -> None:
     result = make_llm(response("half an ans", finish=finish)).chat([])
     assert result.truncated is expected
     assert result.text == "half an ans"  # no error is raised
@@ -81,15 +91,17 @@ def test_fake_chat_is_never_truncated() -> None:
     assert FakeLLM().chat([], json_output=True).truncated is False
 
 
-def test_mistral_embed_uses_the_timeout() -> None:
+# One text uses the chat timeout (7 s here); more than one text uses the batch timeout (70 s).
+@pytest.mark.parametrize(("texts", "timeout_ms"), [(["x"], 7000), (["x", "y"], 70000)])
+def test_mistral_embed_uses_the_right_timeout(texts: list[str], timeout_ms: int) -> None:
     llm = make_llm()
     llm.settings.embed_model = "e"  # type: ignore[attr-defined]
     llm.client.embeddings.create.return_value = SimpleNamespace(  # type: ignore[attr-defined]
-        data=[SimpleNamespace(embedding=[0.5])]
+        data=[SimpleNamespace(embedding=[0.5]) for _ in texts]
     )
-    assert llm.embed(["x"]) == [[0.5]]
+    assert llm.embed(texts) == [[0.5]] * len(texts)
     kwargs = llm.client.embeddings.create.call_args.kwargs  # type: ignore[attr-defined]
-    assert kwargs["timeout_ms"] == 7000
+    assert kwargs["timeout_ms"] == timeout_ms
 
 
 @pytest.mark.parametrize(

@@ -765,8 +765,11 @@ def _handbook_chunks() -> Select[Any]:
 
 
 def _clean(text: str) -> str:
-    """Replace NUL and every other control character (Unicode category Cc) by a space."""
-    return "".join(" " if unicodedata.category(char) == "Cc" else char for char in text)
+    """Replace control characters (category Cc) and lone surrogates (Cs) by a space.
+
+    NUL and surrogates cannot be stored or sent to the database as UTF-8.
+    """
+    return "".join(" " if unicodedata.category(char) in ("Cc", "Cs") else char for char in text)
 
 
 def _search_words(source: str) -> list[str]:

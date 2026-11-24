@@ -17,7 +17,7 @@ log = logging.getLogger("mechai.llm")
 
 
 # The result of one chat call: the answer text, the tokens used (for cost tracking) and whether
-# the answer was cut off because it hit the token limit.
+# the answer did not finish normally (cut off or stopped for another reason).
 @dataclass(frozen=True)
 class ChatResult:
     text: str
@@ -75,7 +75,8 @@ class MistralLLM:
 
     # One chat call at temperature 0 with a timeout. Any provider problem (error, no choices,
     # empty text) becomes ASSISTANT_AI_UNAVAILABLE; the provider's own text is never passed on.
-    # `truncated` is true when the provider stopped because of a length limit (no error is raised).
+    # `truncated` is true when the answer did not finish normally (any finish reason except
+    # "stop", also a missing one), so it is never treated as a complete answer. No error is raised.
     def chat(
         self,
         messages: list[dict[str, str]],
@@ -103,16 +104,22 @@ class MistralLLM:
             text=str(message.content),
             tokens_in=(usage.prompt_tokens or 0) if usage else 0,
             tokens_out=(usage.completion_tokens or 0) if usage else 0,
-            truncated=response.choices[0].finish_reason in ("length", "model_length"),
+            truncated=response.choices[0].finish_reason != "stop",
         )
 
-    # One embedding call with the same timeout as chat().
+    # One embedding call. A single text (a question) must be quick, so it uses the chat timeout;
+    # an ingestion batch of up to 64 texts may take longer and has its own timeout.
     def embed(self, texts: list[str]) -> list[list[float]]:
+        seconds = (
+            self.settings.embed_batch_timeout_seconds
+            if len(texts) > 1
+            else self.settings.ai_timeout_seconds
+        )
         try:
             response = self.client.embeddings.create(
                 model=self.settings.embed_model,
                 inputs=texts,
-                timeout_ms=self.settings.ai_timeout_seconds * 1000,
+                timeout_ms=seconds * 1000,
             )
         except Exception as exc:
             raise AppError(

@@ -62,7 +62,11 @@ class Settings(BaseSettings):
     answer_sections: int = Field(default=5, ge=1, le=10)  # handbook sections given to the AI
     answer_source_tokens: int = Field(default=6000, ge=500, le=20000)  # max source text per answer
     answer_max_tokens: int = Field(default=800, ge=100, le=4000)  # max tokens the AI may write
-    ai_timeout_seconds: int = Field(default=20, ge=1, le=120)  # per chat call
+    ai_timeout_seconds: int = Field(
+        default=20, ge=1, le=120
+    )  # per chat call and per single embedding
+    # Per embedding call with more than one text (an ingestion batch of 64 texts)
+    embed_batch_timeout_seconds: int = Field(default=60, ge=1, le=600)
     daily_question_cap: int = Field(default=300, ge=1, le=100000)  # questions per day, all users
 
     # Worker
