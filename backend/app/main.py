@@ -16,7 +16,7 @@ from app.modules.knowledge.router import router as knowledge_router
 setup_logging()
 
 app = FastAPI(
-    title="MechAi API", version="0.1.0", 
+    title="MechAi API", version="0.1.0", docs_url="/api/docs", openapi_url="/api/openapi.json"
 )
 add_request_id_middleware(app)
 register_error_handlers(app)
