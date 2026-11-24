@@ -7,10 +7,12 @@ from pydantic import ValidationError
 
 from app.modules.assistant import checks
 from app.modules.assistant.checks import (
+    SourceText,
     check_answer,
     is_bypass,
     is_wiring,
     numbers_in,
+    numbers_with_unit,
     question_level,
     strictest,
 )
@@ -190,8 +192,14 @@ def test_numbers_in() -> None:
 
 # A short own text about a kart (no real handbook text).
 SOURCES = {
-    "S1": "Rear axle bearing, p. 12-13. Tighten the axle nut to 25,0 N·m. Part 4711-A bearing.",
-    "S2": "Brake pads, section 4.5.3. Replace the pads when they are thinner than 3 mm.",
+    "S1": SourceText(
+        body="Tighten the axle nut to 25,0 N·m. Part 4711-A bearing.",
+        label="Rear axle bearing, p. 12-13",
+    ),
+    "S2": SourceText(
+        body="Replace the pads when they are thinner than 3 mm.",
+        label="Brake pads, section 4.5.3",
+    ),
 }
 
 
@@ -345,14 +353,19 @@ def test_part_number_must_be_whole(part_number: str, found: bool) -> None:
             "missing_information": [],
         }
     )
-    flags = check_answer(draft, {"S1": "Bearing 4711-A, rear axle"})
+    flags = check_answer(draft, {"S1": src("Bearing 4711-A, rear axle")})
     assert ("part_number_not_in_source" not in flags) == found
 
 
+def src(body: str, label: str = "") -> SourceText:
+    """A cited section with this body text and, when given, this label."""
+    return SourceText(body=body, label=label)
+
+
 def step_flags(text: str, source_text: str) -> list[str]:
-    """The flags of one step that cites a single section S1 holding `source_text`."""
+    """The flags of one step that cites a single section S1 holding `source_text` as its body."""
     step = {"text": text, "sources": ["S1"]}
-    return check_answer(draft(steps=[step]), {"S1": source_text})
+    return check_answer(draft(steps=[step]), {"S1": src(source_text)})
 
 
 # ---- Hidden characters, look-alikes and punctuation inside a word -----------------------------
@@ -543,7 +556,6 @@ def test_more_bypass_wordings(text: str) -> None:
         "Ik heb een schok gekregen",
         "Iemand is gekwetst",
         "De monteur is verwond",
-        "Er is iets verbrand",
         "The kart is burning",
         "There is a burning kart",
         "La batterie est brûlante",
@@ -608,7 +620,7 @@ def test_hidden_characters_do_not_split_a_number() -> None:
 def test_part_number_is_whole(part_number: str, source_text: str, found: bool) -> None:
     """Part numbers must be whole in the cited section."""
     part = {"name": "Bearing", "part_number": part_number, "source": "S1"}
-    flags = check_answer(draft(steps=[], parts=[part]), {"S1": source_text})
+    flags = check_answer(draft(steps=[], parts=[part]), {"S1": src(source_text)})
     assert ("part_number_not_in_source" not in flags) == found
 
 
@@ -625,5 +637,285 @@ def test_a_code_in_generated_text_must_be_in_the_cited_section() -> None:
     # Only a token that starts with letters counts; the end of 4711-A2 is part of the number.
     assert step_flags("Use bearing 4711-A2.", "Use bearing 4711-A2.") == []
     assert check_answer(
-        draft(steps=[], missing_information=["Is AB-471 right?"]), {"S1": "Part CD-471"}
+        draft(steps=[], missing_information=["Is AB-471 right?"]), {"S1": src("Part CD-471")}
     ) == ["part_number_not_in_source"]
+
+
+# ---- Numbers with a unit must be in the body (fix list 4, item 1) -----------------------------
+
+# One example of every unit, as it may be written in an answer.
+UNIT_FORMS = [
+    "Nm", "NM", "N·m", "N m", "newton metre", "Newton meters", "V", "kV", "volt", "A",
+    "mA", "ampere", "Ah", "W", "kW", "Wh", "kWh", "mm", "millimetre", "millimeter", "cm", "m",
+    "km", "kg", "g", "bar", "psi", "rpm", "Hz", "°", "°C", "degrees", "graden",
+    "degrés", "degres", "%", "percent", "procent", "pour cent",
+]  # fmt: skip
+
+
+def label_only_flags(text: str, body: str = "Tighten the nut.") -> list[str]:
+    """The flags of one step when the section number, title and pages are 4.5, 63 and 70."""
+    source = src(body, "4.5 Rear axle pages 63-70")
+    return check_answer(draft(steps=[{"text": text, "sources": ["S1"]}]), {"S1": source})
+
+
+@pytest.mark.parametrize("unit", UNIT_FORMS)
+def test_a_number_with_any_unit_is_not_taken_from_the_label(unit: str) -> None:
+    """Page 63 in the label does not prove "63 <unit>"; the same number in the body does."""
+    assert label_only_flags(f"Tighten to 63 {unit}.") == ["number_not_in_source"]
+    assert label_only_flags(f"Tighten to 63{unit}.") == ["number_not_in_source"]
+    assert label_only_flags(f"Tighten to 63 {unit}.", body=f"Tighten to 63 {unit}.") == []
+
+
+def test_numbers_with_a_unit_from_the_label_are_caught() -> None:
+    """A page number or a section number is not a torque."""
+    assert label_only_flags("Tighten to 63 Nm.") == ["number_not_in_source"]
+    assert label_only_flags("Tighten to 4.5 Nm.") == ["number_not_in_source"]
+    assert label_only_flags("Tighten to 63-70 Nm.") == ["number_not_in_source"]
+    assert label_only_flags("Tighten to 25 Nm.", body="Tighten to 25 Nm.") == []
+
+
+def test_bare_numbers_may_come_from_the_label() -> None:
+    """A section or page reference has no unit and may be in the label or the body."""
+    assert label_only_flags("See 4.5.3 for details.", body="See 4.5.3 for details.") == []
+    assert label_only_flags("See 4.5 and p. 63.") == []
+    assert label_only_flags("Tighten to 25 Nm, see 4.5.", body="Tighten to 25 Nm.") == []
+    assert label_only_flags("See p. 99.") == ["number_not_in_source"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "20-25 Nm", "20 - 25 Nm", "20–25 Nm", "20 to 25 Nm", "20 tot 25 Nm", "20 a 25 Nm",
+        "20 et 25 Nm", "20 en 25 Nm", "20 and 25 Nm", "20 or 25 Nm", "20 of 25 Nm",
+        "20 ou 25 Nm", "20/25 Nm", "20 to 25 NM",
+    ],
+)  # fmt: skip
+def test_both_numbers_of_a_range_have_the_unit(text: str) -> None:
+    """In "20-25 Nm" and its other forms, 20 and 25 both need to be in the body."""
+    assert numbers_with_unit(text) == {Decimal(20), Decimal(25)}
+    assert label_only_flags(f"Tighten to {text}.", body="Tighten to 20 Nm.") == [
+        "number_not_in_source"
+    ]
+    assert label_only_flags(f"Tighten to {text}.", body="Use 20 and 25 Nm.") == []
+
+
+def test_numbers_without_a_unit_are_not_unit_numbers() -> None:
+    """Section numbers, pages and counts have no unit."""
+    assert numbers_with_unit("see 4.5.3 on p. 63") == set()
+    assert numbers_with_unit("3 bolts and 5 washers") == set()
+    assert numbers_with_unit("25,0 N·m and 3 mm") == {Decimal(25), Decimal(3)}
+    assert numbers_with_unit("1,500 mm") == {"1.500"}
+
+
+def test_the_body_of_any_cited_section_counts() -> None:
+    """With two cited sections the number may be in either body, but not in a label."""
+    first = src("Tighten to 25 Nm.", "4.5 Axle")
+    second = src("Wear limit 3 mm.", "4.6 Pads page 70")
+    steps = [{"text": "Use 25 Nm and replace under 3 mm.", "sources": ["S1", "S2"]}]
+    assert check_answer(draft(steps=steps), {"S1": first, "S2": second}) == []
+    steps = [{"text": "Use 70 Nm.", "sources": ["S1", "S2"]}]
+    assert check_answer(draft(steps=steps), {"S1": first, "S2": second}) == ["number_not_in_source"]
+
+
+# ---- Bypass of safety devices (fix list 4, item 3) --------------------------------------------
+
+DEVICES = [
+    "noodstop", "emergency stop", "arret d'urgence", "remsensor", "brake sensor", "seat sensor",
+    "capteur",
+]  # fmt: skip
+SWITCH_OFF_WORDS = [
+    "uitschakel", "overbrug", "disable", "disabling", "defeat", "desactiv", "shunt",
+]  # fmt: skip
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("word", SWITCH_OFF_WORDS)
+def test_every_safety_device_with_every_switch_off_word_is_a_bypass(device: str, word: str) -> None:
+    """Each device with each way to switch it off is a bypass, in any order."""
+    assert is_bypass(f"{device} {word}")
+    assert is_bypass(f"{word} the {device} please")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "noodstop uitschakelen",
+        "De noodstop overbruggen",
+        "Schakel de noodstop uit",
+        "schakel de remsensor uit",
+        "De remsensor uitschakelen",
+        "Disable the brake sensor",
+        "Disable the seat sensor",
+        "Defeat the emergency stop",
+        "Disabling the seat sensor",
+        "desactiver l'arret d'urgence",
+        "Désactiver l'arrêt d'urgence",
+        "Comment shunter le capteur de siège",
+        "Désactiver le capteur",
+    ],
+)
+def test_switching_off_a_safety_device_is_a_bypass(text: str) -> None:
+    """The questions of the reviews, in nl, fr and en."""
+    assert is_bypass(text)
+
+
+@pytest.mark.parametrize(
+    "text", ["De remsensor vervangen", "Replace the brake sensor", "Test the emergency stop"]
+)
+def test_working_on_a_safety_device_is_not_a_bypass(text: str) -> None:
+    """Replacing or testing the device is normal work."""
+    assert not is_bypass(text)
+
+
+# ---- Narrower emergency words (fix list 4, items 5 to 7) --------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "La batterie est gonflée",
+        "batterie gonflee",
+        "la batterie a gonflé",
+        "l'accu a gonflé",
+        "le pack gonfle",
+        "une cellule gonflee",
+        "La batterie va gonfler",
+    ],
+)
+def test_gonfle_is_an_emergency_only_with_a_battery_word(text: str) -> None:
+    """A swollen battery is an emergency (fr)."""
+    assert question_level(text) == "emergency"
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["gonfler les pneus", "pneu gonflé", "pneu degonfle", "Le pneu est gonflé trop fort"],
+)
+def test_gonfle_alone_is_a_tyre_not_an_emergency(text: str) -> None:
+    """Inflating a tyre is normal work; the old list made it an emergency."""
+    assert question_level(text) == "normal"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "motor verbrand",
+        "verbrande accu",
+        "de batterij is verbrand",
+        "er hangt verbrande rook",
+        "ik heb mijn hand verbrand",
+        "zijn handen zijn verbrand",
+        "ik ben verbrand",
+        "hij heeft zijn arm verbrand",
+        "verbrand gezicht",
+        "mijn vinger is verbrand",
+        "verbrand been",
+        "het ruikt verbrand",
+    ],
+)
+def test_verbrand_is_an_emergency_with_a_battery_motor_smoke_or_person(text: str) -> None:
+    """Burnt battery, motor, smoke or a burnt person (nl) is an emergency."""
+    assert question_level(text) == "emergency"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "remblokken verbrand",
+        "verbrande remblokken",
+        "Er is iets verbrand",
+        "de koppeling is verbrand",
+    ],
+)
+def test_verbrand_alone_is_not_an_emergency(text: str) -> None:
+    """Burnt brake pads are not an emergency; the old list made them one."""
+    assert question_level(text) == "normal"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Accueil du kart dans la pit",
+        "Il faut accueillir le client",
+        "Il accueille les pilotes",
+        "De gasregelaar afstellen",
+        "De gasregelaars zijn los",
+        "De laadruimte is vuil",
+        "Alle laadruimtes schoonmaken",
+    ],
+)
+def test_harmless_words_that_start_like_a_safety_word_stay_normal(text: str) -> None:
+    """The [ignore] list blanks these whole words, so accu*, laad* and regelaar do not match."""
+    assert question_level(text) == "normal"
+
+
+@pytest.mark.parametrize(
+    "text", ["De accukabel in de laadruimte", "De acculader bij de gasregelaar", "L'accumulateur"]
+)
+def test_a_real_compound_next_to_an_ignored_word_is_still_high_voltage(text: str) -> None:
+    """Only whole ignored words are blanked, so a real compound next to one is not lost."""
+    assert question_level(text) == "high_voltage"
+
+
+# ---- A part number "null" and empty translations (fix list 4, items 8 and 9) ------------------
+
+
+@pytest.mark.parametrize("written", ["null", "NULL", " Null ", "", "   ", None])
+def test_a_part_number_null_or_blank_becomes_none(written: str | None) -> None:
+    """The model writes "null" for a part without a number; that must not be checked as one."""
+    part = {"name": "Bolt", "part_number": written, "source": "S1"}
+    answer = draft(steps=[], parts=[part])
+    assert answer.parts[0].part_number is None
+    assert check_answer(answer, {"S1": src("A bolt.")}) == []
+
+
+def test_a_real_part_number_is_kept() -> None:
+    """Only null and blank are turned into None."""
+    part = {"name": "Bearing", "part_number": "4711-A", "source": "S1"}
+    answer = draft(steps=[], parts=[part])
+    assert answer.parts[0].part_number == "4711-A"
+    assert check_answer(answer, {"S1": src("Bearing 4711-A")}) == []
+
+
+def test_the_answer_prompt_does_not_ask_for_null() -> None:
+    """The prompt tells the model to leave the key out, not to write null."""
+    from app.modules.assistant import service
+
+    assert "number or null" not in service.ANSWER_PROMPT
+    assert "leave `part_number` out" in service.ANSWER_PROMPT
+
+
+TRANSLATION_DATA = {
+    "question_language": "nl",
+    "question_en": "How do I replace the rear axle bearing?",
+    "search_terms_en": "rear axle bearing",
+    "keywords_en": ["bearing"],
+    "part_numbers": [],
+    "safety_flag": "normal",
+    "is_bypass": False,
+    "is_wiring": False,
+}
+
+
+@pytest.mark.parametrize("question_en", ["", "   ", "\n\t"])
+def test_a_blank_english_question_is_an_invalid_translation(question_en: str) -> None:
+    """A blank English question is a failed translation."""
+    with pytest.raises(ValidationError):
+        Translation.model_validate({**TRANSLATION_DATA, "question_en": question_en})
+
+
+@pytest.mark.parametrize("terms", ["", "  "])
+@pytest.mark.parametrize("keywords", [[], ["", "  "]])
+def test_no_search_text_at_all_is_an_invalid_translation(terms: str, keywords: list[str]) -> None:
+    """Search terms and keywords both without text is a failed translation."""
+    data = {**TRANSLATION_DATA, "search_terms_en": terms, "keywords_en": keywords}
+    with pytest.raises(ValidationError):
+        Translation.model_validate(data)
+
+
+def test_search_terms_or_keywords_alone_are_enough() -> None:
+    """One of the two with real text is enough."""
+    only_terms = {**TRANSLATION_DATA, "keywords_en": []}
+    only_keywords = {**TRANSLATION_DATA, "search_terms_en": ""}
+    assert Translation.model_validate(only_terms).search_terms_en == "rear axle bearing"
+    assert Translation.model_validate(only_keywords).keywords_en == ["bearing"]

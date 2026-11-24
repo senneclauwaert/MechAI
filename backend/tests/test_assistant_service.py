@@ -243,7 +243,7 @@ def test_a_high_voltage_section_in_the_sources_is_flagged_but_still_answers(
 
 
 def test_fake_client_works_end_to_end(handbook: Session, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The built-in fake client (empty question_en and search terms) must not crash."""
+    """The built-in fake client (it copies the question as its translation) works end to end."""
     from app.llm import FakeLLM
 
     fake = FakeLLM()
@@ -792,7 +792,7 @@ def test_both_ai_calls_ask_for_json_and_the_answer_call_has_the_configured_limit
     service.ask(handbook, QUESTION, None, "typed")
 
     assert [o["json_output"] for o in llm.chat_options] == [True, True]
-    assert llm.chat_options[0]["max_tokens"] is not None
+    assert llm.chat_options[0]["max_tokens"] == service.TRANSLATE_MAX_TOKENS == 600
     assert llm.chat_options[1]["max_tokens"] == 1234
 
 
@@ -898,17 +898,33 @@ def test_daily_cap_stops_before_any_ai_call_and_saves_no_trace(
     assert handbook.scalars(select(Trace).where(Trace.question == question)).all() == []
 
 
-def test_high_voltage_question_at_the_cap_is_logged_before_the_429(
-    handbook: Session, llm: ScriptedLLM, caplog: pytest.LogCaptureFixture
+def test_high_voltage_question_at_the_cap_shows_pages_without_any_ai(
+    handbook: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    searches: list[dict[str, Any]],
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
+    def forbidden() -> None:
+        raise AssertionError("get_llm must not be called at the cap")
+
+    monkeypatch.setattr(service, "get_llm", forbidden)
+    monkeypatch.setattr(knowledge_service, "get_llm", forbidden)
     reach_the_cap(handbook)
-    question = f"Hoe vervang ik de batterij {uuid.uuid4().hex}?"
+    question = f"Replace the battery near the axle {uuid.uuid4().hex}"
 
-    with pytest.raises(AppError) as error:
-        service.ask(handbook, question, None, "typed")
+    result = service.ask(handbook, question, None, "typed")
 
-    assert error.value.code == "ASSISTANT_DAILY_LIMIT"
-    assert llm.chat_calls == [] and llm.embed_calls == 0
+    assert result.outcome == "high_voltage" and result.safety_level == "high_voltage"
+    assert result.reason_code == "ASSISTANT_DAILY_LIMIT"
+    assert result.answer is None and len(result.sources) == 1
+    assert searches == [
+        {
+            "query": question,
+            "keywords": [],
+            "part_numbers": [],
+            "use_embeddings": False,
+        }
+    ]
     trace = handbook.scalars(select(Trace).where(Trace.question == question)).one()
     assert trace.outcome == "high_voltage" and trace.safety_level == "high_voltage"
     assert trace.error_code == "ASSISTANT_DAILY_LIMIT"
@@ -918,6 +934,19 @@ def test_high_voltage_question_at_the_cap_is_logged_before_the_429(
         "question done" in r.getMessage() and "outcome=high_voltage" in r.getMessage()
         for r in warnings
     )
+
+
+def test_high_voltage_at_the_cap_with_nothing_embedded_has_no_sources_and_no_error(
+    empty_db: Session, llm: ScriptedLLM
+) -> None:
+    reach_the_cap(empty_db)
+
+    result = service.ask(empty_db, "Hoe vervang ik de batterij?", None, "typed")
+
+    assert result.outcome == "high_voltage"
+    assert result.sources == []
+    assert result.reason_code == "KNOWLEDGE_NOTHING_EMBEDDED"
+    assert llm.chat_calls == [] and llm.embed_calls == 0
 
 
 def test_the_cap_counts_only_todays_questions(handbook: Session, llm: ScriptedLLM) -> None:
@@ -1129,3 +1158,70 @@ def test_logs_hold_no_question_answer_or_section_text(
         assert secret not in logged
         assert secret not in caplog.text
     assert "could not save the emergency trace" in caplog.text
+
+
+# ---- Fix list 4: empty translation, bypass of devices, units in the pipeline ------------------
+
+
+@pytest.mark.parametrize(
+    "translation",
+    [
+        {**TRANSLATION, "question_en": "  "},
+        {**TRANSLATION, "search_terms_en": "", "keywords_en": []},
+        {**TRANSLATION, "search_terms_en": " ", "keywords_en": ["", " "]},
+    ],
+)
+def test_an_empty_translation_counts_as_failed(
+    handbook: Session,
+    llm: ScriptedLLM,
+    searches: list[dict[str, Any]],
+    translation: dict[str, Any],
+) -> None:
+    llm.replies = [ok(translation)]
+
+    result = service.ask(handbook, QUESTION, None, "typed")
+
+    assert result.outcome == "high_voltage"  # a failed translation is high voltage at least
+    assert result.reason_code == "ASSISTANT_AI_UNAVAILABLE"
+    assert "translate_failed" in trace_of(handbook, result.trace_id).flags
+    assert len(llm.chat_calls) == 1
+    assert searches[0]["query"] == QUESTION  # the keyword search used the question as typed
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "Schakel de noodstop uit",
+        "Disable the brake sensor",
+        "Desactiver l'arret d'urgence",
+    ],
+)
+def test_switching_off_a_safety_device_is_refused_by_the_code_alone(
+    handbook: Session, llm: ScriptedLLM, searches: list[dict[str, Any]], question: str
+) -> None:
+    """The AI flags are not needed (and no AI call is made): the word list refuses it."""
+    result = service.ask(handbook, question, None, "typed")
+
+    assert result.outcome == "refused"
+    assert llm.chat_calls == [] and llm.embed_calls == 0 and searches == []
+
+
+def test_a_page_number_with_a_unit_drops_the_steps(handbook: Session, llm: ScriptedLLM) -> None:
+    """The section is on pages 3-4: "3 Nm" is only in its label, so all steps are dropped."""
+    bad = {**ANSWER, "steps": [{"text": "Tighten the nut to 3 Nm.", "sources": ["S1"]}]}
+    llm.replies = [ok(TRANSLATION), ok(bad)]
+
+    result = service.ask(handbook, QUESTION, None, "typed")
+
+    assert result.outcome == "retrieval_only" and result.answer is None
+    assert "number_not_in_source" in trace_of(handbook, result.trace_id).flags
+
+
+def test_a_part_number_null_does_not_drop_the_answer(handbook: Session, llm: ScriptedLLM) -> None:
+    part = {"name": "Axle nut", "part_number": "null", "source": "S1"}
+    llm.replies = [ok(TRANSLATION), ok({**ANSWER, "parts": [part]})]
+
+    result = service.ask(handbook, QUESTION, None, "typed")
+
+    assert result.outcome == "answer"
+    assert result.answer is not None and result.answer.parts[0].part_number is None

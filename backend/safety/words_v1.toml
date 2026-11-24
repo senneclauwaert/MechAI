@@ -16,13 +16,19 @@ nl = [
   "geelektrocuteerd", "explosie", "ontplof", "vlammen", "brandt", "vuur",
   "ruikt+verbrand",
   "heet+accu", "hete+accu", "warm+accu", "warme+accu", "warme+batterij", "elektrische schok",
-  "schok gekregen", "gekwetst", "verwond", "verbrand", "er is brand", "rookontwikkeling",
+  "schok gekregen", "gekwetst", "verwond", "er is brand", "rookontwikkeling",
   "rookwolk",
+  # "verbrand" alone also means burnt brake pads: only with a battery, motor, smoke or a person
+  "verbrand+batterij", "verbrand+accu*", "verbrand+motor", "verbrand+rook", "verbrand+hand",
+  "verbrand+handen", "verbrand+arm", "verbrand+vinger", "verbrand+vingers", "verbrand+gezicht",
+  "verbrand+been", "ik ben verbrand",
 ]
 fr = [
-  "fumee", "en feu", "odeur de brule", "gonfle", "gonflee", "chaude+batterie", "blesse",
+  "fumee", "en feu", "odeur de brule", "chaude+batterie", "blesse",
   "explosion", "flammes", "fume", "fument", "il y a le feu", "prend feu", "pris feu",
   "sent le brule", "choc electrique", "brulant+batterie",
+  # "gonfle" also covers gonflee and gonfler; alone it means inflating a tyre
+  "gonfle+batterie", "gonfle+accu*", "gonfle+pack", "gonfle+cellule",
 ]
 en = [
   "smoke", "smoking", "fire", "on fire", "burning smell", "swollen", "hot+battery", "injured",
@@ -35,14 +41,65 @@ nl = [
   "bypass", "overbrug", "shunt", "interlock", "open+batterijpak", "uitschakel+bms",
   "omzeil", "bms+uit", "bms+uitzetten", "schakel+bms+uit", "openen+accu", "accupack+open",
   "accupack+openen", "batterij+openen", "accu+openmaken",
+  # switching off a safety device: each device with each way to say it
+  "noodstop+uitschakel",
+  "noodstop+overbrug",
+  "noodstop+disable",
+  "noodstop+disabling",
+  "noodstop+defeat",
+  "noodstop+desactiv",
+  "noodstop+shunt*",
+  "remsensor+uitschakel",
+  "remsensor+overbrug",
+  "remsensor+disable",
+  "remsensor+disabling",
+  "remsensor+defeat",
+  "remsensor+desactiv",
+  "remsensor+shunt*",
+  "schakel+noodstop+uit", "schakel+remsensor+uit",
 ]
 fr = [
   "shunter", "ouvrir+batterie", "desactiver+bms",
   "contourner+securite", "neutraliser+securite", "ouverture+batterie",
+  "arret d'urgence+uitschakel",
+  "arret d'urgence+overbrug",
+  "arret d'urgence+disable",
+  "arret d'urgence+disabling",
+  "arret d'urgence+defeat",
+  "arret d'urgence+desactiv",
+  "arret d'urgence+shunt*",
+  "capteur+uitschakel",
+  "capteur+overbrug",
+  "capteur+disable",
+  "capteur+disabling",
+  "capteur+defeat",
+  "capteur+desactiv",
+  "capteur+shunt*",
 ]
 en = [
   "defeat+safety", "open+battery pack", "disable+bms",
   "override+seat switch", "override+safety", "disabling+bms", "open+battery", "opening+battery",
+  "emergency stop+uitschakel",
+  "emergency stop+overbrug",
+  "emergency stop+disable",
+  "emergency stop+disabling",
+  "emergency stop+defeat",
+  "emergency stop+desactiv",
+  "emergency stop+shunt*",
+  "brake sensor+uitschakel",
+  "brake sensor+overbrug",
+  "brake sensor+disable",
+  "brake sensor+disabling",
+  "brake sensor+defeat",
+  "brake sensor+desactiv",
+  "brake sensor+shunt*",
+  "seat sensor+uitschakel",
+  "seat sensor+overbrug",
+  "seat sensor+disable",
+  "seat sensor+disabling",
+  "seat sensor+defeat",
+  "seat sensor+desactiv",
+  "seat sensor+shunt*",
 ]
 
 [high_voltage]
@@ -77,5 +134,6 @@ en = [
 
 # Whole words that look like a safety word but are not (blanked out before matching).
 [ignore]
-nl = ["accuraat"]
+nl = ["accuraat", "gasregelaar", "gasregelaars", "laadruimte", "laadruimtes"]
+fr = ["accueil", "accueillir", "accueille"]
 en = ["accurate", "accurately", "accuracy"]

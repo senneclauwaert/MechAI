@@ -17,12 +17,13 @@ Rules:
    stay in English.
 6. You are not the handbook. Never say that you are, and never say that the handbook says something
    that is not in the sources.
+7. When a part has no part number in the sources, leave `part_number` out. Never write "null".
 
 Return only one JSON object, with exactly this shape:
 
 {
   "steps": [{"text": "one step", "sources": ["S1"]}],
-  "parts": [{"name": "part name", "part_number": "number or null", "source": "S1"}],
+  "parts": [{"name": "part name", "part_number": "number, only when the sources give one", "source": "S1"}],
   "warnings": [{"text": "one warning", "sources": ["S1"]}],
   "confidence": "low" | "medium" | "high",
   "missing_information": ["what the sources do not tell"]

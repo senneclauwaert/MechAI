@@ -2,6 +2,7 @@
 
 `ask()` follows these steps: code safety check on the question as typed, daily cap, translate
 (one AI call), search (knowledge module), decide, write the answer, verify it, save the trace.
+At the daily cap a high-voltage question skips the AI and gets pages from a keyword search.
 Code decides first and the AI second; the stricter safety level always wins. The AI never writes
 steps for high-voltage or emergency questions, and any failed check drops all generated steps.
 Every question that gets past the access and cap checks leaves a trace row.
@@ -53,6 +54,9 @@ AI_DISABLED = "ASSISTANT_AI_DISABLED"
 NOTHING_EMBEDDED = "KNOWLEDGE_NOTHING_EMBEDDED"
 EXTERNAL_TEXT_OFF = "KNOWLEDGE_EXTERNAL_EMBEDDINGS_OFF"
 
+# The translate answer is a small JSON object; 600 tokens leave room for 20 keywords and 10 part
+# numbers (400 was too tight for long questions).
+TRANSLATE_MAX_TOKENS = 600
 TRACE_QUESTION_CHARS = 500
 CLOSEST_SOURCES = 3  # sections shown when the answer is "not in the handbook"
 
@@ -169,12 +173,13 @@ def _answer_messages(question: str, sections: list[RetrievedSection]) -> list[di
     ]
 
 
-def _check_sources(sections: list[RetrievedSection]) -> dict[str, str]:
-    """What the answer check compares with: original text plus heading path and page range."""
-    sources: dict[str, str] = {}
+def _check_sources(sections: list[RetrievedSection]) -> dict[str, checks.SourceText]:
+    """What the answer check compares with: the original text, plus the section number, heading
+    path and page range as a separate label (a number with a unit must be in the text)."""
+    sources: dict[str, checks.SourceText] = {}
     for i, s in enumerate(sections):
         label = f"{s.section_number or ''} {s.heading_path} pages {s.page_start}-{s.page_end}"
-        sources[_source_id(i)] = f"{label}\n{s.text}"
+        sources[_source_id(i)] = checks.SourceText(body=s.text, label=label)
     return sources
 
 
@@ -197,7 +202,9 @@ def _translate(run: _Run, llm: LLMClient | None) -> Translation | None:
     if llm is not None:
         run.model = llm.chat_model  # set before the call: a failed call still counts for the cap
         try:
-            reply = llm.chat(_translate_messages(run.question), json_output=True, max_tokens=400)
+            reply = llm.chat(
+                _translate_messages(run.question), json_output=True, max_tokens=TRANSLATE_MAX_TOKENS
+            )
         except AppError as exc:
             log.warning("translate call failed: %s", exc.code)
         else:
@@ -313,7 +320,7 @@ def _search(
     keywords: list[str] = []
     part_numbers: list[str] = []
     if tr is not None:
-        query = tr.question_en.strip() or run.question
+        query = tr.question_en  # never blank: a blank translation is invalid (see Translation)
         keywords = [k for k in [*tr.keywords_en, tr.search_terms_en] if k.strip()]
         part_numbers = tr.part_numbers
     started = time.monotonic()
@@ -406,9 +413,12 @@ def _answer_step(run: _Run, llm: LLMClient, sections: list[RetrievedSection]) ->
     )
 
 
-def _run_without_ai(db: Session, run: _Run) -> None:
-    """AI_ENABLED=false: keyword search on the question only, no AI call of any kind."""
-    run.reason = AI_DISABLED
+def _run_without_ai(db: Session, run: _Run, reason: str) -> None:
+    """Keyword search on the question only, no AI call of any kind (no chat, no embedding).
+
+    Used when the AI is off and for a high-voltage question at the daily cap; `reason` tells which.
+    """
+    run.reason = reason
     retrieval = _search(db, run, None, use_embeddings=False)
     if retrieval is not None:
         run.outcome = "high_voltage" if run.level == "high_voltage" else "retrieval_only"
@@ -418,17 +428,15 @@ def _run_with_ai(db: Session, run: _Run) -> None:
     """Steps 2 to 7 with the AI on.
 
     At the daily cap a normal question gets the 429 at once (no trace). A high-voltage question
-    is a safety question: it is still logged, as `high_voltage` with the cap as reason, and then
-    gets the 429 after its trace is saved.
+    is a safety question: it gets the pages of a keyword search (no AI call, not even the client
+    is created), outcome `high_voltage` and the cap as reason code, and it is logged.
     """
     try:
         _check_daily_cap(db)  # before any AI call
     except AppError as exc:
         if run.level != "high_voltage":
             raise
-        run.outcome = "high_voltage"
-        run.reason = exc.code
-        run.raise_after = exc
+        _run_without_ai(db, run, exc.code)
         return
     try:
         llm: LLMClient | None = get_llm()
@@ -567,9 +575,9 @@ def ask(db: Session, question: str, kart_number: str | None, input_kind: str) ->
     """Answer one question from the handbook, or explain why not, and save a trace.
 
     Raises ASSISTANT_NOT_ALLOWED in prod (until login exists, no trace) and
-    ASSISTANT_DAILY_LIMIT when the cap is reached (no trace, except for a high-voltage question:
-    its trace is saved first). KNOWLEDGE_NOTHING_EMBEDDED is raised after saving the trace, for a
-    normal question when no handbook text is embedded.
+    ASSISTANT_DAILY_LIMIT when the cap is reached (no trace). A high-voltage question at the cap
+    is not an error: it returns pages with the cap as reason code. KNOWLEDGE_NOTHING_EMBEDDED is
+    raised after saving the trace, for a normal question when no handbook text is embedded.
     """
     if get_settings().environment != "dev":
         raise errors.not_allowed()
@@ -584,7 +592,7 @@ def ask(db: Session, question: str, kart_number: str | None, input_kind: str) ->
         if get_settings().ai_enabled:
             _run_with_ai(db, run)
         else:
-            _run_without_ai(db, run)
+            _run_without_ai(db, run, AI_DISABLED)
     run.latency["total"] = _ms(started)
     trace_id = _save_trace(db, run)
     _log_result(run, trace_id, started)

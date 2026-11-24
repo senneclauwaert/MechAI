@@ -7,7 +7,14 @@ and the pipeline decide what happens with a draft; these shapes only validate it
 import uuid
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, StrictBool, StringConstraints
+from pydantic import (
+    BaseModel,
+    Field,
+    StrictBool,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 
 class Translation(BaseModel):
@@ -25,6 +32,16 @@ class Translation(BaseModel):
     # question asks to bypass a protection or open a battery pack, and whether it is about wiring.
     is_bypass: StrictBool
     is_wiring: StrictBool
+
+    @model_validator(mode="after")
+    def _needs_text(self) -> "Translation":
+        """An empty translation is a failed one: the English question and some search text must
+        hold real text (spaces only do not count)."""
+        if not self.question_en.strip():
+            raise ValueError("question_en is empty")
+        if not self.search_terms_en.strip() and not any(k.strip() for k in self.keywords_en):
+            raise ValueError("no search terms")
+        return self
 
 
 class StepDraft(BaseModel):
@@ -47,6 +64,14 @@ class PartDraft(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     part_number: str | None = Field(default=None, max_length=50)
     source: str
+
+    @field_validator("part_number", mode="before")
+    @classmethod
+    def _no_number_is_none(cls, value: object) -> object:
+        """The model sometimes writes "null" or "" for a part without a number: that is None."""
+        if isinstance(value, str) and value.strip().casefold() in ("", "null"):
+            return None
+        return value
 
 
 class AnswerDraft(BaseModel):

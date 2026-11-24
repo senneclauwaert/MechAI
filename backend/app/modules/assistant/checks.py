@@ -4,12 +4,14 @@ Two jobs:
 1. Decide from word lists (`safety/words_v1.toml`) whether a text is an emergency, a bypass
    request, a high-voltage topic or a wiring topic. Code decides first, the AI comes second.
 2. Check a generated answer against the handbook sections it cites: known sources, every number
-   and part number present in the cited text, and no unsafe or wiring words in generated text.
+   and part number present in the cited text (a number with a unit must be in the body of a
+   section, not only in its label), and no unsafe or wiring words in generated text.
 """
 
 import re
 import tomllib
 import unicodedata
+from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 
@@ -42,6 +44,33 @@ _SOURCE_REF_RE = re.compile(
     r"\((S\d{1,2})\)"
     rf"|\b(S\d{{1,2}})\b(?!\s*(?:\d|[\u00b0%]|(?i:{_UNITS})\b))"
 )
+
+# A number directly followed by one of these units must be in the body of a cited section.
+# Longer units come first. Letter units need a non-letter after them ("3 mm" is not "3 m").
+# Text is lower case and without accents when this is used (see `numbers_with_unit`).
+_LETTER_UNITS = (
+    r"newton\s*(?:metre|meter)s?|millimet(?:re|er)s?|amperes?|volts?|degrees?|degres?|graden"
+    r"|percent|procent|pour\s*cent"
+    r"|n[\s\u00b7]?m|kwh|kv|kw|wh|ah|ma|mm|cm|km|kg|bar|psi|rpm|hz|v|a|w|m|g"
+)
+_UNIT = rf"(?:(?:{_LETTER_UNITS})(?![a-z])|[\u00b0%])"
+# Words and signs between the two numbers of a range ("20-25", "20 to 25", "20/25").
+_RANGE_SEP = r"(?:\s*[-/\u2013\u2014]\s*|\s+(?:to|tot|a|et|en|and|or|of|ou)\s+)"
+_NUM = r"\d+(?:[.,]\d+)?"
+# One number or a range, then a unit. Not in the middle of a number ("4.5.3 mm" has no unit match).
+_UNIT_NUMBERS_RE = re.compile(rf"(?<!\d)(?<!\d[.,]){_NUM}(?:{_RANGE_SEP}{_NUM})*\s*{_UNIT}")
+
+
+@dataclass(frozen=True)
+class SourceText:
+    """One cited section: its text (`body`) and its number, heading path and pages (`label`)."""
+
+    body: str
+    label: str
+
+    def full(self) -> str:
+        """Label and body together, for the checks that do not care where the text comes from."""
+        return f"{self.label}\n{self.body}"
 
 
 def load_words() -> dict[str, list[str]]:
@@ -199,6 +228,18 @@ def numbers_in(text: str) -> set[Decimal | str]:
     return {_number_key(m) for m in _NUMBER_RE.findall(plain)}
 
 
+def numbers_with_unit(text: str) -> set[Decimal | str]:
+    """The numbers in a text that have a unit (25 Nm, 4.5 kg); both numbers of a range count.
+
+    Case and accents are ignored. "Nm", "N m" and "N\u00b7m" are the same unit.
+    """
+    plain = "".join(c for c in unicodedata.normalize("NFKD", text) if not _is_hidden(c))
+    found: set[Decimal | str] = set()
+    for match in _UNIT_NUMBERS_RE.finditer(plain.casefold()):
+        found |= {_number_key(n) for n in _NUMBER_RE.findall(match.group(0))}
+    return found
+
+
 def _has_part_number(part_number: str, source_text: str) -> bool:
     """True when the source holds exactly this part number; case and spaces do not matter.
 
@@ -233,29 +274,38 @@ def _strip_refs(text: str, sent_ids: set[str]) -> str:
     return _SOURCE_REF_RE.sub(drop, text)
 
 
-def check_answer(answer: AnswerDraft, sources: dict[str, str]) -> list[str]:
+def _join(parts: list[SourceText]) -> SourceText:
+    """Several sections as one: all bodies together and all labels together."""
+    return SourceText("\n".join(p.body for p in parts), "\n".join(p.label for p in parts))
+
+
+def check_answer(answer: AnswerDraft, sources: dict[str, SourceText]) -> list[str]:
     """Check a draft against the sent sections; returns the flags raised, empty when fine.
 
-    `sources` maps "S1" to the section text plus its heading path and page range.
+    `sources` maps "S1" to the body and the label (section number, heading path, pages) of the
+    section. A number with a unit must be in a body; a bare number may be in a body or a label.
     Flags: unknown_source, number_not_in_source, part_number_not_in_source, unsafe_words,
     wiring_words.
     """
     flags: set[str] = set()
     texts: list[str] = []  # all generated text, for the word checks
 
-    def cited_text(ids: list[str]) -> str:
+    def cited_text(ids: list[str]) -> SourceText:
         """Join the cited sections; flag ids that were not sent."""
         known = [sources[i] for i in ids if i in sources]
         if len(known) != len(ids):
             flags.add("unknown_source")
-        return "\n".join(known)
+        return _join(known)
 
-    def check_values(text: str, source_text: str) -> None:
-        """Flag numbers and codes (AB-471, M8) in generated text that the source text lacks."""
+    def check_values(text: str, source: SourceText) -> None:
+        """Flag numbers and codes (AB-471, M8) in generated text that the source lacks."""
         plain = _strip_refs(text, set(sources))
-        if not numbers_in(plain) <= numbers_in(source_text):
+        body_numbers = numbers_in(source.body)
+        if not numbers_with_unit(plain) <= body_numbers:
             flags.add("number_not_in_source")
-        if not all(_has_part_number(code, source_text) for code in _codes_in(plain)):
+        if not numbers_in(plain) <= body_numbers | numbers_in(source.label):
+            flags.add("number_not_in_source")
+        if not all(_has_part_number(code, source.full()) for code in _codes_in(plain)):
             flags.add("part_number_not_in_source")
 
     items: list[StepDraft | WarningDraft] = [*answer.steps, *answer.warnings]
@@ -269,10 +319,10 @@ def check_answer(answer: AnswerDraft, sources: dict[str, str]) -> list[str]:
         check_values(part.name, source_text)
         if part.part_number:
             texts.append(part.part_number)
-            if not _has_part_number(part.part_number, source_text):
+            if not _has_part_number(part.part_number, source_text.full()):
                 flags.add("part_number_not_in_source")
 
-    all_sources = "\n".join(sources.values())
+    all_sources = _join(list(sources.values()))
     for note in answer.missing_information:
         texts.append(note)
         check_values(note, all_sources)

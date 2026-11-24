@@ -7,6 +7,7 @@ only this file changes. Tests use FakeLLM, so they are free and need no API key.
 import hashlib
 import json
 import logging
+import re
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -149,8 +150,8 @@ class MistralLLM:
 # keys it does not know, so one object serves both.
 FAKE_JSON_ANSWER: dict[str, object] = {
     "question_language": "en",
-    "question_en": "",
-    "search_terms_en": "",
+    "question_en": "Fake question.",
+    "search_terms_en": "Fake question.",
     "keywords_en": [],
     "part_numbers": [],
     "safety_flag": "normal",
@@ -162,6 +163,12 @@ FAKE_JSON_ANSWER: dict[str, object] = {
     "confidence": "low",
     "missing_information": [],
 }
+
+
+def _question_in(content: str) -> str | None:
+    """The text inside the <question> block of a message (cut to 500 characters), or None."""
+    match = re.search(r"<question>\n(.*?)\n</question>", content, re.DOTALL)
+    return match.group(1).strip()[:500] if match else None
 
 
 class FakeLLM:
@@ -178,7 +185,12 @@ class FakeLLM:
         max_tokens: int | None = None,
     ) -> ChatResult:
         if json_output:
-            return ChatResult(json.dumps(FAKE_JSON_ANSWER), 0, 0)
+            data = dict(FAKE_JSON_ANSWER)
+            # The assistant needs a real translation: use the text of the <question> block.
+            question = _question_in(messages[-1]["content"]) if messages else None
+            if question:
+                data["question_en"] = data["search_terms_en"] = question
+            return ChatResult(json.dumps(data), 0, 0)
         return ChatResult("fake answer", 0, 0)
 
     def embed(self, texts: list[str]) -> list[list[float]]:

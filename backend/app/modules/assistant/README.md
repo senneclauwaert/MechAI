@@ -2,8 +2,7 @@
 
 Owns the repair assistant: it answers a mechanic's question from the manufacturer's handbook, always
 with the pages it used, or says honestly that the handbook does not cover it. Every question that
-reaches the pipeline leaves a trace (schema `assistant`, table `traces`); a 403 and a 429 leave none,
-except a high-voltage question at the daily cap (its trace is saved first). The app shows answers
+reaches the pipeline leaves a trace (schema `assistant`, table `traces`); a 403 and a 429 leave none. The app shows answers
 backed by the handbook; it never presents AI text as the handbook itself.
 
 **Dev only until #26** (login and roles): `POST /ask` refuses with `ASSISTANT_NOT_ALLOWED` (403)
@@ -22,9 +21,8 @@ missing information; only when `outcome` is `answer`), `sources` (S1..S5 with se
 heading path, pages, document title and revision, never the section text) and `reason_code`.
 
 Errors use the standard shape (`code`, `message`, `reference`): `ASSISTANT_NOT_ALLOWED` (403, no
-trace), `ASSISTANT_DAILY_LIMIT` (429, no trace; for a high-voltage question the trace is saved first,
-with outcome `high_voltage` and this code as `error_code`), `KNOWLEDGE_NOTHING_EMBEDDED` (409, after
-the trace is saved), `CORE_VALIDATION_FAILED` (422).
+trace), `ASSISTANT_DAILY_LIMIT` (429, no trace; a high-voltage question at the cap is not an error, see
+below), `KNOWLEDGE_NOTHING_EMBEDDED` (409, after the trace is saved), `CORE_VALIDATION_FAILED` (422).
 
 ## Outcomes
 
@@ -33,7 +31,7 @@ the trace is saved), `CORE_VALIDATION_FAILED` (422).
 | `answer` | Cited steps that passed every check |
 | `not_in_handbook` | Best similarity below `REFUSAL_THRESHOLD`, or the AI found no steps. The 3 closest sources are shown |
 | `retrieval_only` | Pages only: AI off, AI down, answer invalid, wiring question, embedding down, handbook text not allowed out, or a check failed (unknown source, number or part number not in the cited section, wiring words in the generated text) |
-| `high_voltage` | High-voltage question (code, AI flag or a failed translation), unsafe words in the generated text, or the daily cap reached: pages only, no steps |
+| `high_voltage` | High-voltage question (code, AI flag or a failed translation), unsafe words in the generated text, or the daily cap reached: pages only, no steps. At the cap the question is not sent to the AI at all: a keyword search finds the pages (status 200, reason `ASSISTANT_DAILY_LIMIT`, trace saved without a model, logged as a warning) |
 | `emergency` | Smoke, fire, swollen or hot battery, electric shock, injury: no answer and no search, no sources. A question the word lists catch makes no AI call at all; one that is only found after the translate call (English check or AI flag) has made that one call |
 | `refused` | Bypass of a protection or opening a battery pack: no answer and no search, no sources. Same as emergency: no AI call when the word lists catch it, one translate call when the English check or the AI flag finds it |
 
@@ -46,8 +44,11 @@ any AI call (hidden characters, punctuation inside a word and non-Latin look-ali
 hide a word); translate (1 call, which also returns `is_bypass` and `is_wiring`, both required);
 search through `knowledge.retrieve_sections`; answer (1 call, 1 retry on invalid output); then code
 checks the cleaned answer (sources exist, every number and every code like `AB-471` or `M8` is in
-the cited sections, no high-voltage, emergency, bypass or wiring words). If a check fails, all steps
-are dropped. The stricter safety level always wins, and a bypass flag from the AI is refused like a
+the cited sections, no high-voltage, emergency, bypass or wiring words). A number with a unit
+(Nm, V, mm, kg, %, degrees, ...; both numbers of "20-25 Nm") must be in the text of a cited section;
+a section number or page in its heading line does not count for it. A bare number may come from
+the text or the heading line. An empty translation counts as a failed one. If a check fails, all
+steps are dropped. The stricter safety level always wins, and a bypass flag from the AI is refused like a
 bypass word (unless the level is emergency). The prompts are versioned files in `backend/prompts/`.
 
 ## Settings
@@ -55,7 +56,7 @@ bypass word (unless the level is emergency). The prompts are versioned files in 
 `REFUSAL_THRESHOLD` (default 0.70, a placeholder until measured), `ANSWER_SECTIONS`,
 `ANSWER_SOURCE_TOKENS`, `ANSWER_MAX_TOKENS`, `AI_TIMEOUT_SECONDS`, `DAILY_QUESTION_CAP` (questions
 that used the AI since 00:00 UTC; it never blocks emergency or refused, and a high-voltage question
-at the cap is logged before the 429), plus `AI_ENABLED` and
+at the cap gets pages without any AI call), plus `AI_ENABLED` and
 `ALLOW_EXTERNAL_EMBEDDINGS` (which also guards handbook text sent to the chat model).
 
 The worst case of one request is about 80 s (translate, embedding, answer and retry, 20 s each), so
@@ -65,8 +66,8 @@ The worst case of one request is about 80 s (translate, embedding, answer and re
 
 - **#34 (safety):** typo-tolerant word matching, the STOP card, Supercube's fixed texts, the logged
   confirmation and the failure-code lookup exception. The current gate is strict and small.
-- **#37 (number check):** units and the check per cited page. Today a number must be in one of the
-  cited sections.
+- **#37 (number check):** the check per cited page. Today a number must be in one of the cited
+  sections.
 
 ## Known limits
 
@@ -75,8 +76,11 @@ The worst case of one request is about 80 s (translate, embedding, answer and re
 - A long section is stored in parts; search may find only one, so an answer can miss steps.
 - The threshold 0.70 is a guess until it is measured (#29).
 - Several current handbooks are all searched; keep one in dev.
-- Word lists have no typo tolerance yet. A prefix like `accu*` also catches harmless words such as
-  "accueil" (French), and `laad*` catches "laadruimte"; the check is strict on purpose.
+- Word lists have no typo tolerance yet. A prefix like `accu*` or `laad*` can catch harmless words;
+  the whole words that are known to be harmless (accueil, gasregelaar, laadruimte, ...) are in the
+  `[ignore]` list, the check is strict on purpose for the rest.
+- A short word like "a" or "of" between two numbers counts as a range sign, and "a" or "m" after a
+  number as a unit, so "4.5 and 63 mm" asks for 4.5 in the text too (strict on purpose).
 - Slow answers: up to three AI calls plus the embedding inside one request.
 
 ## Error and reason texts

@@ -167,3 +167,23 @@ def test_the_endpoint_is_in_the_openapi_schema(client: TestClient) -> None:
     paths = client.get("/api/openapi.json").json()["paths"]
 
     assert "post" in paths[URL]
+
+
+# A high-voltage question at the daily cap is not an error: 200 with pages and the cap as reason.
+def test_ask_shows_pages_for_a_high_voltage_question_at_the_cap(
+    client: TestClient, handbook: Session, llm: ScriptedLLM
+) -> None:
+    get_settings().daily_question_cap = 1
+    handbook.add(
+        Trace(question="old", input="typed", safety_level="normal", outcome="answer", model="m")
+    )
+    handbook.flush()
+
+    response = client.post(URL, json={"question": "Replace the battery near the axle"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["outcome"] == "high_voltage"
+    assert body["reason_code"] == "ASSISTANT_DAILY_LIMIT"
+    assert len(body["sources"]) == 1
+    assert llm.chat_calls == [] and llm.embed_calls == 0
