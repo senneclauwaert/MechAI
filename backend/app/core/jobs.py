@@ -4,6 +4,7 @@ The api calls enqueue(). The worker calls claim_next() in a loop. Two workers ne
 the same job, thanks to `FOR UPDATE SKIP LOCKED`.
 """
 
+import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -17,11 +18,22 @@ LOCK_TIME = timedelta(minutes=10)  # a crashed job is picked up again after this
 RETRY_DELAY = timedelta(seconds=30)
 
 
-def enqueue(db: Session, job_type: str, payload: dict[str, Any] | None = None) -> Job:
+# Add a job. With commit=False the caller commits it together with its own changes.
+def enqueue(
+    db: Session, job_type: str, payload: dict[str, Any] | None = None, *, commit: bool = True
+) -> Job:
     job = Job(type=job_type, payload=payload or {})
     db.add(job)
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     return job
+
+
+# Look up one job by id; None when it does not exist.
+def get_job(db: Session, job_id: uuid.UUID) -> Job | None:
+    return db.get(Job, job_id)
 
 
 def claim_next(db: Session) -> Job | None:
@@ -62,6 +74,8 @@ def claim_next(db: Session) -> Job | None:
     return job
 
 
+# Ownership check: a worker may only update a job it still holds, i.e. same attempt
+# number and lock not expired. Protects against a job that was taken over after a timeout.
 def _owned(job: Job, claim_token: int):
     return (
         (Job.id == job.id)
@@ -71,6 +85,7 @@ def _owned(job: Job, claim_token: int):
     )
 
 
+# Extend the lock of a running job. Returns False when this worker lost the job.
 def renew_lease(db: Session, job: Job, claim_token: int) -> bool:
     renewed = db.scalar(
         update(Job)
@@ -82,6 +97,8 @@ def renew_lease(db: Session, job: Job, claim_token: int) -> bool:
     return renewed is not None
 
 
+# Finish a job: done on success, back to the queue (with a growing delay) or
+# failed for good after job_max_attempts.
 def mark_done(db: Session, job: Job, claim_token: int) -> None:
     db.execute(update(Job).where(_owned(job, claim_token)).values(status="done", locked_until=None))
     db.commit()

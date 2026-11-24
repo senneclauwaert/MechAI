@@ -13,6 +13,8 @@ from starlette.exceptions import HTTPException
 log = logging.getLogger("mechai")
 
 
+# Raise this anywhere for an expected error: the handler below turns it into
+# the standard JSON body with this code, message and HTTP status.
 class AppError(Exception):
     def __init__(self, code: str, message: str, status: int = 400):
         super().__init__(message)
@@ -21,19 +23,24 @@ class AppError(Exception):
         self.status = status
 
 
+# Shared errors that any module can use.
 def not_found(what: str = "Item") -> AppError:
     return AppError("CORE_NOT_FOUND", f"{what} not found.", 404)
 
 
+# Generic 500 error; the details only go to the log.
 def internal() -> AppError:
     return AppError("CORE_INTERNAL", "Something went wrong on the server.", 500)
 
 
+# Build the error body; the reference is the request id, so it matches the log line.
 def _body(code: str, message: str, request: Request, **extra: object) -> dict:
     reference = getattr(request.state, "request_id", None)
     return {"error": {"code": code, "message": message, "reference": reference, **extra}}
 
 
+# Catch every kind of error and answer in the same format:
+# HTTP errors from FastAPI, our own AppError, invalid request data, and anything unexpected.
 def register_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(HTTPException)
     async def http_error(request: Request, exc: HTTPException) -> JSONResponse:

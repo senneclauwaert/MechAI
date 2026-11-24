@@ -2,6 +2,7 @@
 # On your laptop, add the dev file:  docker compose -f compose.yaml -f compose.dev.yaml up
 # All settings come from .env (copy .env.example to .env).
 
+# Shared by api and worker: same image, same settings, same files volume.
 x-backend: &backend
   image: mechai-backend:${VERSION:-latest}
   build:
@@ -18,6 +19,7 @@ x-backend: &backend
   restart: unless-stopped
 
 services:
+  # PostgreSQL with the pgvector extension. Data lives in the pgdata volume.
   db:
     image: pgvector/pgvector:pg16
     env_file: .env
@@ -40,6 +42,7 @@ services:
       retries: 5
       start_period: 20s
 
+  # Background jobs (handbook ingestion, embeddings). Same image, other start command.
   worker:
     <<: *backend
     command: ["python", "-m", "app.worker"]
@@ -49,6 +52,7 @@ services:
       api:
         condition: service_healthy  # wait until the migrations ran
 
+  # nginx: serves the built frontend and forwards /api to the api container.
   web:
     image: mechai-web:${VERSION:-latest}
     build:

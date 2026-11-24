@@ -1,3 +1,6 @@
+"""Regression tests for fixes from code reviews (settings, AI client, errors, job queue,
+worker and embedding reuse)."""
+
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -16,6 +19,7 @@ from app.llm import FakeLLM, MistralLLM
 from app.modules.knowledge.schemas import PlaygroundTextIn
 
 
+# Settings and input validation
 def test_settings_and_empty_title() -> None:
     assert Settings(_env_file=None).embed_dimensions == 1024
     for dimensions in (512, 1025):
@@ -25,6 +29,7 @@ def test_settings_and_empty_title() -> None:
         PlaygroundTextIn(title="", text="text")
 
 
+# The Mistral client must reject a bad embedding response.
 @pytest.mark.parametrize("vectors", [[], [None], [[1.0], [2.0]]])
 def test_invalid_embeddings(vectors) -> None:
     llm = object.__new__(MistralLLM)
@@ -40,6 +45,7 @@ def test_invalid_embeddings(vectors) -> None:
     assert FakeLLM().embedding_model != llm.embedding_model
 
 
+# Health alias at the root, and HTTP errors in the standard error format
 def test_health_alias_and_http_errors(client: TestClient) -> None:
     assert client.get("/health").json() == {"status": "ok", "database": "ok"}
     for path, method, status in [("/missing", "get", 404), ("/health", "post", 405)]:
@@ -50,6 +56,7 @@ def test_health_alias_and_http_errors(client: TestClient) -> None:
             assert "GET" in response.headers["allow"]
 
 
+# Job queue: expired claims, the attempt cap and claim ownership
 def test_expired_claim_cap_and_ownership(db: Session) -> None:
     db.execute(delete(Job))
     old = datetime.now(UTC) - timedelta(minutes=11)
@@ -78,6 +85,7 @@ def test_expired_claim_cap_and_ownership(db: Session) -> None:
     assert claimed.status == "done"
 
 
+# Worker: survives a database outage and keeps a long job's lock alive
 def test_poll_recovers_database_failure(monkeypatch) -> None:
     from sqlalchemy.exc import SQLAlchemyError
 
@@ -122,6 +130,7 @@ def test_heartbeat_renews_while_work_continues(monkeypatch) -> None:
     assert finished.wait.call_args.args == (200.0,)
 
 
+# Embeddings of another model are never reused or searched
 def test_embedding_reuse_and_search_isolate_models(db: Session) -> None:
     from app.modules.knowledge import service
     from app.modules.knowledge.models import Chunk

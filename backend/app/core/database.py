@@ -11,6 +11,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sess
 
 from app.config import get_settings
 
+# One engine (connection pool) for the whole process; pre_ping drops dead connections.
 engine = create_engine(get_settings().db_url, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 

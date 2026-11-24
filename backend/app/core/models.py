@@ -25,6 +25,7 @@ class Job(Base):
     locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+# Who did what to which record. Written for actions that must be traceable.
 class AuditLog(Base):
     __tablename__ = "audit_log"
     __table_args__ = {"schema": "core"}

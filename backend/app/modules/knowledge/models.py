@@ -4,7 +4,7 @@ import uuid
 from datetime import date
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Computed, Date, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import Computed, Date, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import TSVECTOR
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -13,6 +13,8 @@ from app.core.database import Base
 EMBED_DIMENSIONS = 1024  # mistral-embed
 
 
+# An uploaded source: a handbook PDF, or the playground. file_hash stops the same
+# PDF from being ingested twice; job_id points to its last ingestion job.
 class Document(Base):
     __tablename__ = "documents"
     __table_args__ = {"schema": "knowledge"}
@@ -25,11 +27,19 @@ class Document(Base):
     published_on: Mapped[date | None] = mapped_column(Date)
     superseded_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("knowledge.documents.id"))
     file_path: Mapped[str | None] = mapped_column(String(500))
+    file_hash: Mapped[str | None] = mapped_column(String(64), unique=True)
+    job_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("core.jobs.id", ondelete="SET NULL")
+    )
 
 
+# One page of a document: its text and the path of its PNG image (for citations).
 class Page(Base):
     __tablename__ = "pages"
-    __table_args__ = {"schema": "knowledge"}
+    __table_args__ = (
+        UniqueConstraint("document_id", "page_number", name="pages_document_page"),
+        {"schema": "knowledge"},
+    )
 
     document_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("knowledge.documents.id", ondelete="CASCADE"), index=True
@@ -40,6 +50,8 @@ class Page(Base):
     kind: Mapped[str] = mapped_column(String(20), default="text")
 
 
+# A numbered section of the handbook (e.g. "5.3.1 Bearings") with its full heading
+# path, page range and safety level. Long sections are stored in parts.
 class Section(Base):
     __tablename__ = "sections"
     __table_args__ = {"schema": "knowledge"}
@@ -56,6 +68,9 @@ class Section(Base):
     safety_level: Mapped[str] = mapped_column(String(20), default="normal")
 
 
+# A piece of a section that is searched: its text (with a context header), the
+# embedding for vector search and a tsvector for full-text search.
+# Indexes: HNSW for cosine search, GIN for full-text, and hash+model to reuse embeddings.
 class Chunk(Base):
     __tablename__ = "chunks"
     __table_args__ = (

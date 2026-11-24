@@ -3,12 +3,15 @@
 import { useEffect, useState } from 'react'
 import { ApiError, api } from './lib/api'
 
+// Response of GET /api/v1/health
 type Health = { status: string; database: string }
 
 export default function App() {
   const [health, setHealth] = useState<Health | null>(null)
   const [error, setError] = useState<ApiError | null>(null)
 
+  // Call the health endpoint once on load. `active` stops a late answer from
+  // updating the state after the component is gone.
   useEffect(() => {
     let active = true
     api<Health>('/health')

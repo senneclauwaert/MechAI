@@ -14,20 +14,28 @@ from app.core.errors import AppError
 log = logging.getLogger("mechai.llm")
 
 
+# The interface every AI client has: chat, embeddings and speech-to-text.
 class LLMClient(Protocol):
     @property
     def embedding_model(self) -> str: ...
 
+    # Chat completion; json_output asks the model for a JSON object.
     def chat(self, messages: list[dict[str, str]], json_output: bool = False) -> str: ...
+    # Embeddings: one vector per text, in the same order.
     def embed(self, texts: list[str]) -> list[list[float]]: ...
+    # Speech-to-text for voice input (Voxtral).
     def transcribe(self, audio: bytes, file_name: str, language: str | None = None) -> str: ...
 
 
+# Error returned when the provider cannot be reached or gives an empty answer.
 def ai_unavailable() -> AppError:
     return AppError("ASSISTANT_AI_UNAVAILABLE", "The AI service cannot be reached.", 503)
 
 
+# The real client. Every provider error becomes an AppError, so the api answers
+# with a clean error code instead of a stack trace.
 class MistralLLM:
+    # Fails with ASSISTANT_AI_DISABLED when no API key is set.
     def __init__(self) -> None:
         from mistralai.client import Mistral
 
@@ -87,6 +95,7 @@ class FakeLLM:
 
     embedding_model = "fake-word-count-v1"
 
+    # Fixed answers, so code that calls the AI can run without a key.
     def chat(self, messages: list[dict[str, str]], json_output: bool = False) -> str:
         return '{"answer": "fake"}' if json_output else "fake answer"
 
@@ -108,6 +117,7 @@ class FakeLLM:
         return "fake transcript"
 
 
+# Pick the client: the fake one when no API key is set, otherwise Mistral.
 def get_llm() -> LLMClient:
     key = get_settings().mistral_api_key
     if key is None or not key.get_secret_value():

@@ -1,3 +1,5 @@
+"""Core: health check, error format and the job queue with the worker."""
+
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
@@ -5,6 +7,7 @@ from app.core import jobs
 from app.worker import run_one
 
 
+# API: health and the shared error format
 def test_health(client: TestClient) -> None:
     response = client.get("/api/v1/health")
     assert response.status_code == 200
@@ -25,6 +28,7 @@ def test_validation_error_shape(client: TestClient) -> None:
     assert response.json()["error"]["code"] == "CORE_VALIDATION_FAILED"
 
 
+# Job queue and worker
 def test_worker_runs_a_job(db: Session) -> None:
     job = jobs.enqueue(db, "echo", {"msg": "hi"})
     assert run_one(db)
