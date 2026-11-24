@@ -5,7 +5,9 @@ only this file changes. Tests use FakeLLM, so they are free and need no API key.
 """
 
 import hashlib
+import json
 import logging
+from dataclasses import dataclass
 from typing import Protocol
 
 from app.config import get_settings
@@ -14,13 +16,29 @@ from app.core.errors import AppError
 log = logging.getLogger("mechai.llm")
 
 
+# The result of one chat call: the answer text and the tokens used (for cost tracking).
+@dataclass(frozen=True)
+class ChatResult:
+    text: str
+    tokens_in: int
+    tokens_out: int
+
+
 # The interface every AI client has: chat, embeddings and speech-to-text.
 class LLMClient(Protocol):
     @property
     def embedding_model(self) -> str: ...
 
-    # Chat completion; json_output asks the model for a JSON object.
-    def chat(self, messages: list[dict[str, str]], json_output: bool = False) -> str: ...
+    @property
+    def chat_model(self) -> str: ...
+
+    # Chat completion; json_output asks the model for a JSON object, max_tokens caps the answer.
+    def chat(
+        self,
+        messages: list[dict[str, str]],
+        json_output: bool = False,
+        max_tokens: int | None = None,
+    ) -> ChatResult: ...
     # Embeddings: one vector per text, in the same order.
     def embed(self, texts: list[str]) -> list[list[float]]: ...
     # Speech-to-text for voice input (Voxtral).
@@ -49,20 +67,40 @@ class MistralLLM:
     def embedding_model(self) -> str:
         return self.settings.embed_model
 
-    def chat(self, messages: list[dict[str, str]], json_output: bool = False) -> str:
+    @property
+    def chat_model(self) -> str:
+        return self.settings.chat_model
+
+    # One chat call at temperature 0 with a timeout. Any provider problem (error, no choices,
+    # empty text) becomes ASSISTANT_AI_UNAVAILABLE; the provider's own text is never passed on.
+    def chat(
+        self,
+        messages: list[dict[str, str]],
+        json_output: bool = False,
+        max_tokens: int | None = None,
+    ) -> ChatResult:
         try:
             response = self.client.chat.complete(
                 model=self.settings.chat_model,
                 messages=messages,  # type: ignore[arg-type]
-                temperature=0.1,
+                temperature=0,
+                max_tokens=max_tokens,
                 response_format={"type": "json_object"} if json_output else None,
+                timeout_ms=self.settings.ai_timeout_seconds * 1000,
             )
         except Exception as exc:
             raise ai_unavailable() from exc
+        if not response.choices:
+            raise ai_unavailable()
         message = response.choices[0].message
         if message is None or not message.content:
             raise ai_unavailable()
-        return str(message.content)
+        usage = response.usage
+        return ChatResult(
+            text=str(message.content),
+            tokens_in=(usage.prompt_tokens or 0) if usage else 0,
+            tokens_out=(usage.completion_tokens or 0) if usage else 0,
+        )
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         try:
@@ -90,14 +128,40 @@ class MistralLLM:
         return response.text
 
 
+# The fixed JSON the fake client returns for json_output=True. It holds the keys of both
+# assistant calls (understand the question, write the answer); each caller ignores the
+# keys it does not know, so one object serves both.
+FAKE_JSON_ANSWER: dict[str, object] = {
+    "question_language": "en",
+    "question_en": "",
+    "search_terms_en": "",
+    "keywords_en": [],
+    "part_numbers": [],
+    "safety_flag": "normal",
+    "steps": [{"text": "Fake step.", "sources": ["S1"]}],
+    "parts": [],
+    "warnings": [],
+    "confidence": "low",
+    "missing_information": [],
+}
+
+
 class FakeLLM:
     """Fixed answers for tests and for working without an API key."""
 
     embedding_model = "fake-word-count-v1"
+    chat_model = "fake-chat-v1"
 
-    # Fixed answers, so code that calls the AI can run without a key.
-    def chat(self, messages: list[dict[str, str]], json_output: bool = False) -> str:
-        return '{"answer": "fake"}' if json_output else "fake answer"
+    # Fixed answers, so code that calls the AI can run without a key. No tokens are used.
+    def chat(
+        self,
+        messages: list[dict[str, str]],
+        json_output: bool = False,
+        max_tokens: int | None = None,
+    ) -> ChatResult:
+        if json_output:
+            return ChatResult(json.dumps(FAKE_JSON_ANSWER), 0, 0)
+        return ChatResult("fake answer", 0, 0)
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         """A word-count vector: texts that share words end up close. Free, no API call."""
