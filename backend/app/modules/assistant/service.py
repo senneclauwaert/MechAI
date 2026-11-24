@@ -46,7 +46,7 @@ log = logging.getLogger("mechai.assistant")
 
 PROMPTS_DIR = Path(__file__).resolve().parents[3] / "prompts"
 TRANSLATE_VERSION = "translate_v1"
-ANSWER_VERSION = "answer_v1"
+ANSWER_VERSION = "answer_v2"  # answer_v1.md stays: old traces refer to it
 
 # Reason codes that are defined outside this module (llm.py and the knowledge module).
 AI_UNAVAILABLE = "ASSISTANT_AI_UNAVAILABLE"

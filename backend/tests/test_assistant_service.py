@@ -217,7 +217,7 @@ def test_cited_answer_for_a_rear_axle_question_in_dutch(
     assert trace.kart_number == "07"
     assert trace.model == "scripted-chat"
     assert (trace.tokens_in, trace.tokens_out) == (210, 55)
-    assert trace.prompt_versions == {"translate": "translate_v1", "answer": "answer_v1"}
+    assert trace.prompt_versions == {"translate": "translate_v1", "answer": "answer_v2"}
     assert trace.best_similarity is not None and trace.best_similarity > 0.99
     assert len(trace.sections_sent) == 1
     assert trace.retrieved[0]["similarity"] > 0.99
@@ -764,6 +764,92 @@ def test_a_number_from_another_section_than_the_cited_one_is_dropped(
 
 
 # ---- What is sent to the search and to the model ----------------------------------------------
+
+
+# An invented torque table: mechanical rows and a controller row in one high-voltage section
+TORQUE_TABLE = (
+    "| Screw connection | Torque |\n"
+    "| --- | --- |\n"
+    "| Seat bracket - floor plate | 17 Nm |\n"
+    "| Motor controller - housing | 8 Nm |\n"
+    "| Pedal - floor plate | 21 Nm |"
+)
+TORQUE_TRANSLATION = {
+    **TRANSLATION,
+    "question_language": "en",
+    "question_en": "what is the torque of the seat bracket",
+    "search_terms_en": "seat bracket torque",
+    "keywords_en": ["seat", "bracket", "torque"],
+}
+
+
+@pytest.fixture
+def torque_table(empty_db: Session) -> Session:
+    """One handbook with the mixed torque table, tagged high voltage by the controller row."""
+    doc = Document(title="Test kart manual", source_type="handbook", revision="A")
+    empty_db.add(doc)
+    empty_db.flush()
+    add_section(empty_db, doc, "9.9", TORQUE_TABLE, level="high_voltage")
+    return empty_db
+
+
+def one_step(text: str) -> ChatResult:
+    """An answer reply with a single step that cites S1."""
+    return ok({**ANSWER, "steps": [{"text": text, "sources": ["S1"]}]})
+
+
+def test_a_mechanical_row_of_a_mixed_torque_table_is_answered(
+    torque_table: Session, llm: ScriptedLLM
+) -> None:
+    step = "Tighten the seat bracket to the floor plate with 17 Nm."
+    llm.replies = [ok(TORQUE_TRANSLATION), one_step(step)]
+    result = service.ask(torque_table, "What is the torque of the seat bracket?", None, "typed")
+    assert result.outcome == "answer"
+    assert result.answer is not None
+    assert [s.text for s in result.answer.steps] == [step]
+    trace = trace_of(torque_table, result.trace_id)
+    assert trace.flags == ["hv_section_sent"]
+    assert trace.prompt_versions["answer"] == "answer_v2"
+
+
+# The prompt may let the model read a mixed table; the code still decides what is shown
+@pytest.mark.parametrize(
+    ("step", "outcome", "flag"),
+    [
+        ("Tighten the motor controller to the housing with 8 Nm.", "high_voltage", "unsafe_words"),
+        ("Tighten the seat bracket with 19 Nm.", "retrieval_only", "number_not_in_source"),
+    ],
+)
+def test_a_controller_row_or_an_invented_torque_is_never_shown(
+    torque_table: Session, llm: ScriptedLLM, step: str, outcome: str, flag: str
+) -> None:
+    llm.replies = [ok(TORQUE_TRANSLATION), one_step(step)]
+    result = service.ask(torque_table, "What is the torque of the seat bracket?", None, "typed")
+    assert result.outcome == outcome
+    assert result.answer is None
+    assert flag in trace_of(torque_table, result.trace_id).flags
+
+
+def test_a_question_about_the_controller_row_gets_no_answer_call(
+    torque_table: Session, llm: ScriptedLLM
+) -> None:
+    llm.replies = [ok(TORQUE_TRANSLATION)]  # one reply: an answer call would fail the test
+    result = service.ask(torque_table, "What is the torque of the motor controller?", None, "typed")
+    assert result.outcome == "high_voltage"
+    assert result.answer is None
+    assert len(llm.chat_calls) == 1
+
+
+def test_the_answer_prompt_sent_to_the_model_holds_the_v2_rules(
+    torque_table: Session, llm: ScriptedLLM
+) -> None:
+    llm.replies = [ok(TORQUE_TRANSLATION), one_step("Use 17 Nm.")]
+    service.ask(torque_table, "What is the torque of the seat bracket?", None, "typed")
+    prompt = " ".join(llm.chat_calls[1][0]["content"].split())
+    assert "gets one step that states the fact" in prompt
+    assert "answer the mechanical row that was asked for" in prompt
+    assert "only when no source answers the question" in prompt
+    assert (service.PROMPTS_DIR / "answer_v1.md").exists()  # kept for the trace history
 
 
 def test_the_search_gets_the_english_question_keywords_and_part_numbers(
