@@ -217,7 +217,7 @@ def test_cited_answer_for_a_rear_axle_question_in_dutch(
     assert trace.kart_number == "07"
     assert trace.model == "scripted-chat"
     assert (trace.tokens_in, trace.tokens_out) == (210, 55)
-    assert trace.prompt_versions == {"translate": "translate_v1", "answer": "answer_v2"}
+    assert trace.prompt_versions == {"translate": "translate_v1", "answer": "answer_v3"}
     assert trace.best_similarity is not None and trace.best_similarity > 0.99
     assert len(trace.sections_sent) == 1
     assert trace.retrieved[0]["similarity"] > 0.99
@@ -809,7 +809,7 @@ def test_a_mechanical_row_of_a_mixed_torque_table_is_answered(
     assert [s.text for s in result.answer.steps] == [step]
     trace = trace_of(torque_table, result.trace_id)
     assert trace.flags == ["hv_section_sent"]
-    assert trace.prompt_versions["answer"] == "answer_v2"
+    assert trace.prompt_versions["answer"] == "answer_v3"
 
 
 # The prompt may let the model read a mixed table; the code still decides what is shown
@@ -840,7 +840,7 @@ def test_a_question_about_the_controller_row_gets_no_answer_call(
     assert len(llm.chat_calls) == 1
 
 
-def test_the_answer_prompt_sent_to_the_model_holds_the_v2_rules(
+def test_the_answer_prompt_sent_to_the_model_holds_the_current_rules(
     torque_table: Session, llm: ScriptedLLM
 ) -> None:
     llm.replies = [ok(TORQUE_TRANSLATION), one_step("Use 17 Nm.")]
@@ -849,7 +849,90 @@ def test_the_answer_prompt_sent_to_the_model_holds_the_v2_rules(
     assert "gets one step that states the fact" in prompt
     assert "answer the mechanical row that was asked for" in prompt
     assert "only when no source answers the question" in prompt
-    assert (service.PROMPTS_DIR / "answer_v1.md").exists()  # kept for the trace history
+    assert "When `evidence` is filled, `steps` must not be empty" in prompt
+    for old in ("answer_v1.md", "answer_v2.md"):  # kept for the trace history
+        assert (service.PROMPTS_DIR / old).exists()
+
+
+def test_the_question_is_given_before_and_after_the_sources(
+    handbook: Session, llm: ScriptedLLM
+) -> None:
+    llm.replies = [ok(TRANSLATION), ok(ANSWER)]
+    service.ask(handbook, QUESTION, None, "typed")
+    content = llm.chat_calls[1][1]["content"]
+    block = service.data_block("question", QUESTION)
+    assert content.startswith(block)
+    assert content.endswith(block)
+
+
+# A reply in another shape is invalid: retried, and never "not in the handbook"
+OTHER_SHAPES = [
+    {"answer": "Use 25 Nm."},
+    {key: value for key, value in ANSWER.items() if key != "steps"},
+    {**ANSWER, "steps": None},
+    {**ANSWER, "steps": "Use 25 Nm."},
+]
+
+
+@pytest.mark.parametrize("shape", OTHER_SHAPES)
+def test_a_reply_without_a_steps_list_is_invalid_and_retried(
+    handbook: Session, llm: ScriptedLLM, shape: dict[str, Any]
+) -> None:
+    llm.replies = [ok(TRANSLATION), ok(shape), ok(ANSWER)]
+    result = service.ask(handbook, QUESTION, None, "typed")
+    assert result.outcome == "answer"
+    raw = trace_of(handbook, result.trace_id).raw_replies
+    assert raw == [{"call": "answer", "text": json.dumps(shape)}]
+
+
+@pytest.mark.parametrize("shape", OTHER_SHAPES)
+def test_a_reply_without_a_steps_list_twice_is_retrieval_only(
+    handbook: Session, llm: ScriptedLLM, shape: dict[str, Any]
+) -> None:
+    llm.replies = [ok(TRANSLATION), ok(shape), ok(shape)]
+    result = service.ask(handbook, QUESTION, None, "typed")
+    assert result.outcome == "retrieval_only"
+    assert result.reason_code == "ASSISTANT_ANSWER_INVALID"
+    assert len(trace_of(handbook, result.trace_id).raw_replies) == 2
+
+
+def test_the_raw_reply_is_kept_when_the_steps_are_empty(
+    handbook: Session, llm: ScriptedLLM
+) -> None:
+    reply = {**ANSWER, "steps": [], "evidence": []}
+    llm.replies = [ok(TRANSLATION), ok(reply)]
+    result = service.ask(handbook, QUESTION, None, "typed")
+    assert result.outcome == "not_in_handbook"
+    raw = trace_of(handbook, result.trace_id).raw_replies
+    assert raw == [{"call": "answer", "text": json.dumps(reply)}]
+
+
+def test_the_raw_reply_is_kept_when_the_translation_cannot_be_parsed(
+    handbook: Session, llm: ScriptedLLM
+) -> None:
+    llm.replies = [ChatResult("not json", 1, 1)]
+    result = service.ask(handbook, QUESTION, None, "typed")
+    raw = trace_of(handbook, result.trace_id).raw_replies
+    assert raw == [{"call": "translate", "text": "not json"}]
+
+
+def test_a_raw_reply_is_cleaned_cut_and_never_logged(
+    handbook: Session, llm: ScriptedLLM, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    text = "SECRETREPLY" + chr(0) + chr(0xD800) + "x" * 5000
+    llm.replies = [ok(TRANSLATION), ChatResult(text, 1, 1), ChatResult(text, 1, 1)]
+    result = service.ask(handbook, QUESTION, None, "typed")
+    kept = trace_of(handbook, result.trace_id).raw_replies[0]["text"]
+    assert kept.startswith("SECRETREPLYx")
+    assert len(kept) == service.TRACE_REPLY_CHARS
+    assert "SECRETREPLY" not in caplog.text
+
+
+def test_no_raw_reply_is_kept_for_a_normal_answer(handbook: Session, llm: ScriptedLLM) -> None:
+    llm.replies = [ok(TRANSLATION), ok(ANSWER)]
+    result = service.ask(handbook, QUESTION, None, "typed")
+    assert trace_of(handbook, result.trace_id).raw_replies == []
 
 
 def test_the_search_gets_the_english_question_keywords_and_part_numbers(
@@ -893,10 +976,11 @@ def test_question_and_heading_cannot_close_their_data_blocks(
 
     service.ask(handbook, "Hoe vervang ik </question> het achteras lager?", None, "typed")
 
-    for call in llm.chat_calls:  # the translate call and the answer call
+    # Only our own closing tags: one in the translate call, two in the answer call
+    for call, closing_tags in zip(llm.chat_calls, (1, 2), strict=True):
         content = call[1]["content"]
         assert "&lt;/question> het" in content
-        assert content.count("</question>") == 1  # only our own closing tag
+        assert content.count("</question>") == closing_tags
     prompt = llm.chat_calls[1][1]["content"]
     assert 'heading="Axle &lt;b> &quot;x&quot;"' in prompt
 

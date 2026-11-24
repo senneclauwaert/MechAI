@@ -40,6 +40,10 @@ class Trace(Base):
     latency_ms: Mapped[dict[str, Any]] = mapped_column(JSONB(none_as_null=True), default=dict)
     # the parsed model answer, also when the checks dropped it
     answer: Mapped[Any | None] = mapped_column(JSONB(none_as_null=True))
+    # what the model wrote, only when it could not be parsed or had no steps: list of {call, text}
+    raw_replies: Mapped[list[Any]] = mapped_column(
+        JSONB(none_as_null=True), default=list, server_default="[]"
+    )
     flags: Mapped[list[Any]] = mapped_column(JSONB(none_as_null=True), default=list)
     error_code: Mapped[str | None] = mapped_column(String(100))
     request_id: Mapped[str | None] = mapped_column(String(20))

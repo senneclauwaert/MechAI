@@ -51,6 +51,8 @@ of a cited section), a section ("section 4.5.3", found in the heading line or th
 ("step 2", up to the number of steps). A reference followed by a unit ("p. 63 Nm") is a value. An empty translation counts as a failed one. If a check fails, all
 steps are dropped. The stricter safety level always wins, and a bypass flag from the AI is refused like a
 bypass word (unless the level is emergency). The prompts are versioned files in `backend/prompts/`.
+The model's raw reply is kept in the trace (`raw_replies`, at most 4000 characters each) only when it
+could not be parsed, was cut off, or had no steps. It can quote a source, so it never goes in the logs.
 
 ## Settings
 

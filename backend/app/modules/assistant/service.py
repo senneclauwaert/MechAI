@@ -46,7 +46,7 @@ log = logging.getLogger("mechai.assistant")
 
 PROMPTS_DIR = Path(__file__).resolve().parents[3] / "prompts"
 TRANSLATE_VERSION = "translate_v1"
-ANSWER_VERSION = "answer_v2"  # answer_v1.md stays: old traces refer to it
+ANSWER_VERSION = "answer_v3"  # v1 and v2 stay: old traces refer to them
 
 # Reason codes that are defined outside this module (llm.py and the knowledge module).
 AI_UNAVAILABLE = "ASSISTANT_AI_UNAVAILABLE"
@@ -58,6 +58,7 @@ EXTERNAL_TEXT_OFF = "KNOWLEDGE_EXTERNAL_EMBEDDINGS_OFF"
 # numbers.
 TRANSLATE_MAX_TOKENS = 600
 TRACE_QUESTION_CHARS = 500
+TRACE_REPLY_CHARS = 4000  # longest raw reply kept in a trace
 CLOSEST_SOURCES = 3  # sections shown when the answer is "not in the handbook"
 
 
@@ -92,6 +93,7 @@ class _Run:
     draft: dict[str, Any] | None = None
     answer: AnswerOut | None = None
     flags: list[str] = field(default_factory=list)
+    raw_replies: list[dict[str, str]] = field(default_factory=list)  # replies we could not use
     raise_after: AppError | None = None  # raised after the trace is saved
 
 
@@ -164,9 +166,11 @@ def _translate_messages(question: str) -> list[dict[str, str]]:
 
 
 def _answer_messages(question: str, sections: list[RetrievedSection]) -> list[dict[str, str]]:
-    """System prompt plus the question and the numbered sections, each in a data block."""
+    """System prompt, then the question, the numbered sections and the question again."""
     blocks = [data_block("question", question)]
     blocks += [_source_block(_source_id(i), s) for i, s in enumerate(sections)]
+    # Again after the long sources, so the model still has the question in view
+    blocks.append(data_block("question", question))
     return [
         {"role": "system", "content": ANSWER_PROMPT},
         {"role": "user", "content": "\n".join(blocks)},
@@ -197,6 +201,11 @@ def _parse[T: BaseModel](model: type[T], text: str) -> T | None:
         return None
 
 
+def _keep_raw(run: _Run, call: str, text: str) -> None:
+    """Keep a reply for the trace: one that could not be parsed, or an answer without steps."""
+    run.raw_replies.append({"call": call, "text": _safe(text)[:TRACE_REPLY_CHARS]})
+
+
 def _translate(run: _Run, llm: LLMClient | None) -> Translation | None:
     """One translate call. None means it failed or gave unusable output (no retry)."""
     started = time.monotonic()
@@ -215,6 +224,8 @@ def _translate(run: _Run, llm: LLMClient | None) -> Translation | None:
             run.tokens_out += reply.tokens_out
             if not reply.truncated:
                 result = _parse(Translation, reply.text)
+            if result is None:
+                _keep_raw(run, "translate", reply.text)
     run.latency["translate"] = _ms(started)
     return result
 
@@ -247,6 +258,8 @@ def _write_answer(
         draft = None if reply.truncated else _parse(AnswerDraft, reply.text)
         if draft is not None:
             draft = _clean_draft(draft)
+        if draft is None or not draft.steps:
+            _keep_raw(run, "answer", reply.text)
         if draft is not None:
             run.reason = None
             break
@@ -496,7 +509,10 @@ def _result(run: _Run, trace_id: str | None) -> AskOut:
 
 
 def _new_trace(run: _Run) -> Trace:
-    """The trace row of a question: ids and scores only, never section text. All text is cleaned."""
+    """The trace row of a question: ids and scores, never section text. All text is cleaned.
+
+    A raw reply of the model is only kept when it could not be used (see `_keep_raw`).
+    """
     retrieval = run.retrieval
     revisions = sorted(
         {(s.document_title, s.revision) for s in retrieval.sections} if retrieval else set(),
@@ -536,6 +552,7 @@ def _new_trace(run: _Run) -> Trace:
         tokens_out=run.tokens_out,
         latency_ms=run.latency,
         answer=_safe_json(run.draft),
+        raw_replies=run.raw_replies,
         flags=sorted(set(run.flags)),
         error_code=run.reason if run.outcome != "answer" else None,
         request_id=(request_id_var.get() or "")[:20] or None,
