@@ -6,6 +6,7 @@ from alembic import context
 from sqlalchemy import create_engine
 
 import app.core.models  # noqa: F401
+import app.modules.assistant.models  # noqa: F401
 import app.modules.knowledge.models  # noqa: F401
 from app.config import get_settings
 from app.core.database import Base
@@ -15,7 +16,7 @@ if context.config.config_file_name:
     fileConfig(context.config.config_file_name)
 
 # One PostgreSQL schema per module (vault: Data model)
-SCHEMAS = {"core", "knowledge"}
+SCHEMAS = {"core", "knowledge", "assistant"}
 
 
 # Only look at our own schemas, so autogenerate ignores public and the extensions.
