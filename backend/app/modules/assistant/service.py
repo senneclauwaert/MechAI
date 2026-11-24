@@ -277,12 +277,14 @@ def _apply_translation(run: _Run, tr: Translation | None) -> bool:
         "keywords_en": tr.keywords_en,
         "part_numbers": tr.part_numbers,
         "safety_flag": tr.safety_flag,
+        "is_bypass": tr.is_bypass,
+        "is_wiring": tr.is_wiring,
     }
     run.level = checks.strictest(run.level, tr.safety_flag, checks.question_level(english))
     if run.level == "emergency":  # code emergency is checked before bypass
         run.outcome = "emergency"
         return True
-    if checks.is_bypass(english):
+    if tr.is_bypass or checks.is_bypass(english):  # the AI flag counts like the word list
         run.outcome = "refused"
         return True
     return False
@@ -323,9 +325,10 @@ def _search(
 
 
 def _is_wiring(run: _Run, tr: Translation | None) -> bool:
-    """True when the question (or its English terms) is about wiring."""
+    """True when the question, its English terms or the AI flag say it is about wiring."""
     english = _english_text(tr) if tr is not None else ""
-    return checks.is_wiring(run.question) or checks.is_wiring(english)
+    flag = tr is not None and tr.is_wiring
+    return flag or checks.is_wiring(run.question) or checks.is_wiring(english)
 
 
 def _decide(run: _Run, retrieval: Retrieval, wiring: bool, llm: LLMClient | None) -> bool:

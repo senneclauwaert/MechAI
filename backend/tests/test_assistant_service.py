@@ -33,6 +33,8 @@ TRANSLATION: dict[str, Any] = {
     "keywords_en": ["axle", "bearing"],
     "part_numbers": [],
     "safety_flag": "normal",
+    "is_bypass": False,
+    "is_wiring": False,
 }
 ANSWER: dict[str, Any] = {
     "steps": [
@@ -440,7 +442,62 @@ def test_wiring_question_shows_pages_only(handbook: Session, llm: ScriptedLLM) -
     assert len(llm.chat_calls) == 1
 
 
+# An electric shock is an emergency in nl, fr and en, found by the code: no AI call at all.
+@pytest.mark.parametrize(
+    "question",
+    [
+        "Ik heb een elektrische schok gekregen",
+        "J'ai pris un choc électrique",
+        "I got an electric shock",
+    ],
+)
+def test_electric_shock_is_an_emergency_without_any_ai_call(
+    handbook: Session, llm: ScriptedLLM, searches: list[dict[str, Any]], question: str
+) -> None:
+    result = service.ask(handbook, question, None, "typed")
+
+    assert result.outcome == "emergency"
+    assert llm.chat_calls == [] and llm.embed_calls == 0 and searches == []
+
+
+def test_ai_bypass_flag_alone_is_refused_and_kept_in_the_trace(
+    handbook: Session, llm: ScriptedLLM, searches: list[dict[str, Any]]
+) -> None:
+    llm.replies = [ok({**TRANSLATION, "is_bypass": True})]
+
+    result = service.ask(handbook, QUESTION, None, "typed")
+
+    assert result.outcome == "refused"
+    assert searches == [] and len(llm.chat_calls) == 1
+    terms = trace_of(handbook, result.trace_id).search_terms
+    assert terms["is_bypass"] is True and terms["is_wiring"] is False
+
+
+def test_ai_bypass_flag_does_not_beat_an_emergency(handbook: Session, llm: ScriptedLLM) -> None:
+    llm.replies = [ok({**TRANSLATION, "is_bypass": True, "safety_flag": "emergency"})]
+
+    result = service.ask(handbook, QUESTION, None, "typed")
+
+    assert result.outcome == "emergency"
+
+
+def test_ai_wiring_flag_alone_gives_pages_only(handbook: Session, llm: ScriptedLLM) -> None:
+    llm.replies = [ok({**TRANSLATION, "is_wiring": True})]
+
+    result = service.ask(handbook, QUESTION, None, "typed")
+
+    assert result.outcome == "retrieval_only"
+    assert result.answer is None and len(result.sources) == 1
+    assert len(llm.chat_calls) == 1
+    assert trace_of(handbook, result.trace_id).search_terms["is_wiring"] is True
+
+
 # ---- Failing AI calls -------------------------------------------------------------------------
+
+
+def without(key: str) -> ChatResult:
+    """A translation reply that lacks one key."""
+    return ChatResult(json.dumps({k: v for k, v in TRANSLATION.items() if k != key}), 1, 1)
 
 
 @pytest.mark.parametrize(
@@ -450,8 +507,19 @@ def test_wiring_question_shows_pages_only(handbook: Session, llm: ScriptedLLM) -
         ChatResult("this is not json", 1, 1),
         ChatResult(json.dumps({**TRANSLATION, "safety_flag": "maybe"}), 1, 1),
         ChatResult(json.dumps(TRANSLATION), 1, 1, truncated=True),
+        without("is_bypass"),
+        without("is_wiring"),
+        ChatResult(json.dumps({**TRANSLATION, "is_bypass": "false"}), 1, 1),
     ],
-    ids=["call-failed", "not-json", "wrong-shape", "truncated"],
+    ids=[
+        "call-failed",
+        "not-json",
+        "wrong-shape",
+        "truncated",
+        "no-bypass-flag",
+        "no-wiring-flag",
+        "flag-is-a-string",
+    ],
 )
 def test_failed_translation_gives_high_voltage(
     handbook: Session, llm: ScriptedLLM, reply: ChatResult | AppError
@@ -561,6 +629,19 @@ def test_high_voltage_word_in_a_generated_step_gives_high_voltage(
 
     assert result.outcome == "high_voltage"
     assert result.safety_level == "high_voltage"
+    assert result.answer is None
+    assert "unsafe_words" in trace_of(handbook, result.trace_id).flags
+
+
+def test_a_dutch_compound_in_a_generated_step_gives_high_voltage(
+    handbook: Session, llm: ScriptedLLM
+) -> None:
+    bad = {**ANSWER, "steps": [{"text": "Koppel de accukabel los.", "sources": ["S1"]}]}
+    llm.replies = [ok(TRANSLATION), ok(bad)]
+
+    result = service.ask(handbook, QUESTION, None, "typed")
+
+    assert result.outcome == "high_voltage"
     assert result.answer is None
     assert "unsafe_words" in trace_of(handbook, result.trace_id).flags
 

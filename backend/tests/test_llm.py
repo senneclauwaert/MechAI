@@ -41,6 +41,7 @@ def test_fake_chat_json_has_all_keys() -> None:
     assert data["question_language"] == "en"
     assert data["steps"] == [{"text": "Fake step.", "sources": ["S1"]}]
     assert data["safety_flag"] == "normal"
+    assert data["is_bypass"] is False and data["is_wiring"] is False
     assert data["confidence"] == "low"
     assert {"keywords_en", "part_numbers", "parts", "warnings", "missing_information"} <= set(data)
     assert (result.tokens_in, result.tokens_out) == (0, 0)

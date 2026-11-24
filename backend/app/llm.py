@@ -154,6 +154,8 @@ FAKE_JSON_ANSWER: dict[str, object] = {
     "keywords_en": [],
     "part_numbers": [],
     "safety_flag": "normal",
+    "is_bypass": False,
+    "is_wiring": False,
     "steps": [{"text": "Fake step.", "sources": ["S1"]}],
     "parts": [],
     "warnings": [],

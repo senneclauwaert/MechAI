@@ -7,11 +7,11 @@ and the pipeline decide what happens with a draft; these shapes only validate it
 import uuid
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, StringConstraints
+from pydantic import BaseModel, Field, StrictBool, StringConstraints
 
 
 class Translation(BaseModel):
-    """Result of the translate call: language, English search texts and the model's safety flag."""
+    """Result of the translate call: language, English search texts and the model's flags."""
 
     question_language: Literal["nl", "fr", "en"]
     # The whole question as one natural English sentence (vector search and similarity score).
@@ -21,6 +21,10 @@ class Translation(BaseModel):
     part_numbers: list[Annotated[str, Field(max_length=50)]] = Field(max_length=10)
     # Required on purpose: a missing flag makes the translation invalid (stricter level wins).
     safety_flag: Literal["normal", "high_voltage", "emergency"]
+    # Also required, and a real true or false (not "false" or 0): the model says whether the
+    # question asks to bypass a protection or open a battery pack, and whether it is about wiring.
+    is_bypass: StrictBool
+    is_wiring: StrictBool
 
 
 class StepDraft(BaseModel):

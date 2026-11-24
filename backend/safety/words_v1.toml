@@ -3,6 +3,9 @@
 # Matching rules (see checks.py): case, accents, hyphens and extra spaces are ignored.
 # An entry with "+" needs all its parts in the text. A part of 6 or more characters matches
 # anywhere (so "batterij" also finds "batterijkabel"); a shorter part only as a whole word.
+# A part ending in "*" matches the start of a word ("accu*" finds "accukabel"), a part starting
+# with "*" matches the end of a word ("*lader" finds "acculader"). The [ignore] list holds whole
+# words that are blanked out before matching, so "accurate" does not match "accu*".
 #
 # Never remove an entry without a test that shows why. A new list is a new file (words_v2.toml).
 
@@ -12,36 +15,45 @@ nl = [
   "warm+batterij", "heet+batterij", "hete+batterij", "hete+accu", "gewond",
   "geelektrocuteerd", "explosie", "ontplof", "vlammen", "brandt", "vuur",
   "ruikt+verbrand",
+  "heet+accu", "hete+accu", "warm+accu", "warme+accu", "warme+batterij", "elektrische schok",
+  "schok gekregen", "gekwetst", "verwond", "verbrand", "er is brand", "rookontwikkeling",
+  "rookwolk",
 ]
 fr = [
   "fumee", "en feu", "odeur de brule", "gonfle", "gonflee", "chaude+batterie", "blesse",
   "explosion", "flammes", "fume", "fument", "il y a le feu", "prend feu", "pris feu",
-  "sent le brule",
+  "sent le brule", "choc electrique", "brulant+batterie",
 ]
 en = [
   "smoke", "smoking", "fire", "on fire", "burning smell", "swollen", "hot+battery", "injured",
   "electrocut", "explosion", "flames", "smokes", "smells+burning", "smells+burnt",
+  "electric shock", "is burning", "burning+kart",
 ]
 
 [bypass]
 nl = [
   "bypass", "overbrug", "shunt", "interlock", "open+batterijpak", "uitschakel+bms",
+  "omzeil", "bms+uit", "bms+uitzetten", "schakel+bms+uit", "openen+accu", "accupack+open",
+  "accupack+openen", "batterij+openen", "accu+openmaken",
 ]
 fr = [
   "shunter", "ouvrir+batterie", "desactiver+bms",
+  "contourner+securite", "neutraliser+securite", "ouverture+batterie",
 ]
 en = [
   "defeat+safety", "open+battery pack", "disable+bms",
+  "override+seat switch", "override+safety", "disabling+bms", "open+battery", "opening+battery",
 ]
 
 [high_voltage]
 nl = [
   "batterij", "accu", "accus", "accupack", "lader", "laders", "oplader", "laden", "opladen",
   "controller", "omvormer", "hoogspanning", "motorkabel", "isolatie", "zekering", "oplaad", "laadstation",
+  "accu*", "laad*", "*lader", "regelaar", "motorregelaar", "accumulator",
 ]
 fr = [
   "batterie", "chargeur", "controleur", "onduleur", "contacteur", "fusible", "haute tension",
-  "isolation", "recharg",
+  "isolation", "recharg", "accumulateur",
 ]
 en = [
   "battery", "batteries", "bms", "charger", "charging", "controller", "inverter", "contactor",
@@ -49,6 +61,21 @@ en = [
 ]
 
 [wiring]
-nl = ["draad", "draden", "bedrading", "kabelboom", "pinout"]
-fr = ["cablage", "fil", "fils", "pinout"]
-en = ["wiring", "wire", "wires", "pinout"]
+nl = [
+  "draad", "draden", "bedrading", "kabelboom", "pinout", "connector", "connectors", "stekker",
+  "rode+kabel", "zwarte+kabel", "blauwe+kabel", "gele+kabel", "groene+kabel", "witte+kabel",
+  "oranje+kabel", "pin+kabel", "pin+connector",
+]
+fr = [
+  "cablage", "fil", "fils", "pinout", "connecteur", "rouge+cable", "noir+cable", "bleu+cable",
+  "jaune+cable", "vert+cable", "blanc+cable", "orange+cable", "broche+cable", "pin+cable",
+]
+en = [
+  "wiring", "wire", "wires", "pinout", "red+cable", "black+cable", "blue+cable", "yellow+cable",
+  "green+cable", "white+cable", "orange+cable", "pin+cable", "pin+connector",
+]
+
+# Whole words that look like a safety word but are not (blanked out before matching).
+[ignore]
+nl = ["accuraat"]
+en = ["accurate", "accurately", "accuracy"]

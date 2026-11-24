@@ -160,7 +160,13 @@ def test_word_lists_keep_the_required_entries() -> None:
         "bypass": ["bypass", "overbrug", "shunter", "disable+bms", "desactiver+bms"],
         "high_voltage": ["battery", "batterij", "accupack", "hv", "haute tension", "oplader"],
         "wiring": ["wiring", "draad", "kabelboom", "cablage", "pinout"],
+        # added after the first review round
+        "ignore": ["accurate", "accurately", "accuracy", "accuraat"],
     }
+    required["high_voltage"] += ["accu*", "laad*", "*lader", "regelaar", "accumulateur"]
+    required["bypass"] += ["omzeil", "bms+uit", "open+battery", "ouverture+batterie"]
+    required["emergency"] += ["electric shock", "heet+accu", "rookwolk", "choc electrique"]
+    required["wiring"] += ["connector", "stekker", "rode+kabel", "pin+cable"]
     for name, entries in required.items():
         assert set(entries) <= set(checks.WORDS[name])
 
@@ -252,7 +258,11 @@ def test_part_numbers() -> None:
 def test_part_name_number_is_checked() -> None:
     """Numbers in a part name go through the number check."""
     part = {"name": "Bolt M8 x 40", "part_number": None, "source": "S1"}
-    assert check_answer(draft(parts=[part]), SOURCES) == ["number_not_in_source"]
+    # 40 is not in the section, and neither is the code M8.
+    assert check_answer(draft(parts=[part]), SOURCES) == [
+        "number_not_in_source",
+        "part_number_not_in_source",
+    ]
 
 
 def test_unsafe_words_in_generated_text() -> None:
@@ -274,8 +284,8 @@ def test_wiring_words() -> None:
     assert check_answer(draft(steps=[step]), SOURCES) == ["wiring_words"]
 
 
-def test_translation_needs_a_valid_safety_flag() -> None:
-    """The safety flag is required and must be a known value; unknown keys are ignored."""
+def test_translation_needs_valid_flags() -> None:
+    """The three flags are required and must be valid; unknown keys are ignored."""
     data = {
         "question_language": "nl",
         "question_en": "How do I replace the rear axle bearing?",
@@ -284,11 +294,21 @@ def test_translation_needs_a_valid_safety_flag() -> None:
         "part_numbers": [],
         "extra": "ignored",
     }
+    flags = {"safety_flag": "normal", "is_bypass": False, "is_wiring": False}
     with pytest.raises(ValidationError):
         Translation.model_validate(data)
     with pytest.raises(ValidationError):
-        Translation.model_validate({**data, "safety_flag": "dangerous"})
-    assert Translation.model_validate({**data, "safety_flag": "normal"}).safety_flag == "normal"
+        Translation.model_validate({**data, **flags, "safety_flag": "dangerous"})
+    for name in ("is_bypass", "is_wiring"):
+        missing = {key: value for key, value in flags.items() if key != name}
+        with pytest.raises(ValidationError):
+            Translation.model_validate({**data, **missing})
+        with pytest.raises(ValidationError):  # a real boolean only: "false" and 0 are refused
+            Translation.model_validate({**data, **flags, name: "false"})
+        with pytest.raises(ValidationError):
+            Translation.model_validate({**data, **flags, name: 0})
+    translation = Translation.model_validate({**data, **flags, "is_bypass": True})
+    assert translation.safety_flag == "normal" and translation.is_bypass is True
 
 
 # Other ways to say smoke, fire and charging
@@ -327,3 +347,283 @@ def test_part_number_must_be_whole(part_number: str, found: bool) -> None:
     )
     flags = check_answer(draft, {"S1": "Bearing 4711-A, rear axle"})
     assert ("part_number_not_in_source" not in flags) == found
+
+
+def step_flags(text: str, source_text: str) -> list[str]:
+    """The flags of one step that cites a single section S1 holding `source_text`."""
+    step = {"text": text, "sources": ["S1"]}
+    return check_answer(draft(steps=[step]), {"S1": source_text})
+
+
+# ---- Hidden characters, look-alikes and punctuation inside a word -----------------------------
+
+# Every character the security review named, plus private use and an unassigned one.
+HIDDEN = [
+    "\ufe0f",  # variation selector (Mn)
+    "\u034f",  # combining grapheme joiner (Mn)
+    "\u180b",  # Mongolian free variation selector (Mn)
+    "\u17b4",  # Khmer inherent vowel (Mn)
+    "\u20dd",  # combining enclosing circle (Me)
+    "\u0488",  # combining Cyrillic hundred thousands sign (Me)
+    "\u3164",  # Hangul filler
+    "\u115f",  # Hangul choseong filler
+    "\u1160",  # Hangul jungseong filler
+    "\uffa0",  # halfwidth Hangul filler
+    "\u2800",  # braille blank
+    "\ue000",  # private use (Co)
+    "\u0378",  # unassigned (Cn)
+]
+
+
+@pytest.mark.parametrize("hidden", HIDDEN)
+def test_more_hidden_characters_do_not_hide_a_word(hidden: str) -> None:
+    """A mark, filler, private-use or unassigned character inside a word does not hide it."""
+    assert question_level(f"replace the bat{hidden}tery") == "high_voltage"
+    assert question_level(f"there is sm{hidden}oke") == "emergency"
+    assert is_bypass(f"how to byp{hidden}ass the interlock")
+    assert is_wiring(f"which w{hidden}ire goes there")
+
+
+@pytest.mark.parametrize("hidden", HIDDEN)
+def test_hidden_characters_in_a_generated_step_are_flagged(hidden: str) -> None:
+    """The same characters inside a generated step raise unsafe_words."""
+    assert step_flags(f"Remove the bat{hidden}tery lid.", "Remove the lid.") == ["unsafe_words"]
+
+
+@pytest.mark.parametrize("text", ["bat.tery", "bat_tery", "high.voltage", "high_voltage", "H.V."])
+def test_punctuation_inside_a_word_does_not_hide_it(text: str) -> None:
+    """Punctuation and symbols are read both as a space and as nothing."""
+    assert question_level(f"replace the {text} part") == "high_voltage"
+    assert step_flags(f"Remove the {text} part.", "Remove the part.") == ["unsafe_words"]
+
+
+def test_punctuation_inside_an_emergency_word() -> None:
+    """The same for emergency words."""
+    assert question_level("there is sm.oke") == "emergency"
+    assert question_level("there is sm_oke") == "emergency"
+
+
+def test_a_non_latin_letter_makes_a_question_high_voltage() -> None:
+    """A Cyrillic, Greek or Chinese letter is a look-alike or foreign: at least high voltage."""
+    assert question_level("replace the b\u0430ttery") == "high_voltage"  # Cyrillic a
+    assert question_level("check the axle \u03b1") == "high_voltage"  # Greek alpha
+    assert question_level("check the axle \u4e2d") == "high_voltage"  # a Chinese letter
+    assert question_level("there is sm\u043eke") == "high_voltage"  # Cyrillic o, not emergency
+    assert step_flags("Tighten the n\u0443t.", "Tighten the nut.") == ["unsafe_words"]
+
+
+@pytest.mark.parametrize("text", ["gap of 5 \u03bcm", "gap of 5 \u00b5m", "10 \u03c9", "10 \u2126"])
+def test_greek_mu_and_omega_are_allowed_for_units(text: str) -> None:
+    """Micro and ohm signs are units, not look-alikes."""
+    assert question_level(text) == "normal"
+    assert step_flags(f"Keep the gap small, in {text}.", f"Gap {text}.") == []
+
+
+def test_accents_and_punctuation_in_normal_text_stay_normal() -> None:
+    """Dutch and French accents, apostrophes and quotes do not raise the level."""
+    assert question_level("Hoe stel ik d'achteras af? éèê ç ï") == "normal"
+    assert question_level("L\u2019essieu arrière \u2014 \u00ab régler \u00bb") == "normal"
+
+
+# ---- High-voltage compounds -------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "De accukabel is los",
+        "De acculader werkt niet",
+        "Vervang de accuklem",
+        "De laadkabel is stuk",
+        "Controleer de motorregelaar",
+        "De snellader klikt",
+        "The accumulator is empty",
+        "L'accumulateur est vide",
+    ],
+)
+def test_high_voltage_compounds(text: str) -> None:
+    """Dutch compounds with accu, laad and lader are high voltage."""
+    assert question_level(text) == "high_voltage"
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["Adjust the nut accurately", "This is accurate", "Check the accuracy", "Het is accuraat"],
+)
+def test_words_that_only_look_like_accu_stay_normal(text: str) -> None:
+    """The ignore list keeps accurate, accurately, accuracy and accuraat out of accu*."""
+    assert question_level(text) == "normal"
+
+
+def test_a_step_with_a_compound_is_dropped_and_accurately_stays() -> None:
+    """A generated step with "accukabel" is flagged; "accurately" is fine."""
+    assert step_flags("Koppel de accukabel los.", "Koppel los.") == ["unsafe_words"]
+    assert step_flags("Adjust the nut accurately.", "Adjust the nut.") == []
+
+
+# ---- Wiring -----------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "De rode kabel gaat op pin 25",
+        "Le cable rouge va sur la broche 25",
+        "The red cable goes on pin 25",
+        "Waar zit de zwarte kabel",
+        "De blauwe kabel is los",
+        "Which yellow cable is it",
+        "Le cable noir est coupe",
+        "Welke stekker is dit",
+        "Where does this connector go",
+        "Ce connecteur est casse",
+        "Which pin on this cable",
+        "Welke pin zit op de kabel",
+        "Which pin on the connector",
+    ],
+)
+def test_more_wiring_questions(text: str) -> None:
+    """Cable colours, connectors and pins are wiring."""
+    assert is_wiring(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["Adjust the brake cable", "De gaskabel afstellen", "Regler le cable de frein", "Fit a pin"],
+)
+def test_a_plain_cable_is_not_wiring(text: str) -> None:
+    """Brake and throttle cables are everyday work."""
+    assert not is_wiring(text)
+
+
+# ---- Bypass and opening a battery -------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Hoe kan ik de noodstop omzeilen",
+        "Can I override the seat switch",
+        "How to override the safety",
+        "Comment contourner la sécurité",
+        "Comment neutraliser la sécurité",
+        "Schakel de BMS uit",
+        "BMS uitzetten",
+        "Kan de bms uit",
+        "Disabling the BMS",
+        "How to open the battery",
+        "Opening the battery pack",
+        "Hoe kan ik de accu openen",
+        "De accupack open maken",
+        "De accupack openen",
+        "De batterijpak openen",
+        "De accu openmaken",
+        "Ouverture de la batterie",
+    ],
+)
+def test_more_bypass_wordings(text: str) -> None:
+    """Bypass wordings of the reviews, in nl, fr and en."""
+    assert is_bypass(text)
+
+
+# ---- Emergency --------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "De accu is heet",
+        "Een hete accu",
+        "De accu is warm",
+        "Een warme accu",
+        "Een warme batterij",
+        "I got an electric shock",
+        "Ik kreeg een elektrische schok",
+        "J'ai pris un choc électrique",
+        "Ik heb een schok gekregen",
+        "Iemand is gekwetst",
+        "De monteur is verwond",
+        "Er is iets verbrand",
+        "The kart is burning",
+        "There is a burning kart",
+        "La batterie est brûlante",
+        "Er is brand in de pit",
+        "Er is rookontwikkeling",
+        "Er hangt een rookwolk",
+    ],
+)
+def test_more_emergencies(text: str) -> None:
+    """Hot battery, electric shock, injury, burning and smoke wordings are emergencies."""
+    assert question_level(text) == "emergency"
+
+
+# ---- Numbers and part numbers -----------------------------------------------------------------
+
+
+def test_only_sent_source_ids_are_references() -> None:
+    """S45 and (S99) are numbers when only S1 and S2 were sent; so is S1 in front of a unit."""
+    section = "Rear axle. Tighten the axle nut to 25 Nm."
+    # The unknown reference is also a token that starts with a letter, so a second flag is raised.
+    for text in ("Tighten to S45 Nm.", "Tighten to (S99) Nm.", "Tighten to S1 Nm.", "S1 25 Nm."):
+        assert "number_not_in_source" in step_flags(text, section)
+    assert step_flags("Tighten to 25 Nm (S1).", section) == []
+    assert step_flags("Tighten to 25 Nm, see S1.", section) == []
+    assert step_flags("Tighten to (S1) 25 Nm.", section) == []
+
+
+def test_a_thousands_form_is_not_a_decimal() -> None:
+    """ "1,500" is compared as written: 1.5 does not match it, 1.500 does."""
+    section = "Limit 1,500 mm."
+    assert step_flags("Limit 1.5 mm.", section) == ["number_not_in_source"]
+    assert step_flags("Limit 1500 mm.", section) == ["number_not_in_source"]
+    assert step_flags("Limit 1.500 mm.", section) == []
+    assert step_flags("Limit 1,500 mm.", section) == []
+    assert step_flags("Limit 1.500 mm.", "Limit 1.5 mm.") == ["number_not_in_source"]
+    assert numbers_in("1,500") == numbers_in("1.500") == {"1.500"}
+    assert numbers_in("25,0") == {Decimal(25)}  # one trailing zero is not a thousands form
+
+
+def test_hidden_characters_do_not_split_a_number() -> None:
+    """A mark between digits does not turn 25 into 2 and 5."""
+    assert numbers_in("2\u034f5 Nm") == {Decimal(25)}
+
+
+# A part number is whole: no letter, digit, "-", "/" or dot and digit next to it, no line break
+@pytest.mark.parametrize(
+    ("part_number", "source_text", "found"),
+    [
+        ("471", "Part 471.25 here", False),
+        ("25", "Part 471.25 here", False),
+        ("471", "Part 471/B here", False),
+        ("471", "Part A/471 here", False),
+        ("4711", "page 47\n11 bolts", False),
+        ("4711", "page 47 11 bolts", True),
+        ("4711", "page 47\t11 bolts", True),
+        ("4711", "Part 4711, and 4712", True),
+        ("4711", "Part 4711.", True),
+        ("4711-A", "Part 4711-A.", True),
+        ("4711", "Part 4711-A", False),
+    ],
+)
+def test_part_number_is_whole(part_number: str, source_text: str, found: bool) -> None:
+    """Part numbers must be whole in the cited section."""
+    part = {"name": "Bearing", "part_number": part_number, "source": "S1"}
+    flags = check_answer(draft(steps=[], parts=[part]), {"S1": source_text})
+    assert ("part_number_not_in_source" not in flags) == found
+
+
+def test_a_code_in_generated_text_must_be_in_the_cited_section() -> None:
+    """A token like AB-471 or M8 must be there as a whole, else part_number_not_in_source."""
+    assert step_flags("Use part AB-471.", "Use part CD-471.") == ["part_number_not_in_source"]
+    assert step_flags("Use part AB-471.", "Use part AB-471.") == []
+    assert step_flags("Use an M8 bolt.", "Use an M8 bolt.") == []
+    assert step_flags("Use an M8 bolt.", "Use an M8x40 bolt.") == ["part_number_not_in_source"]
+    assert step_flags("Use an M8 bolt.", "Use a bolt.") == [
+        "number_not_in_source",
+        "part_number_not_in_source",
+    ]
+    # Only a token that starts with letters counts; the end of 4711-A2 is part of the number.
+    assert step_flags("Use bearing 4711-A2.", "Use bearing 4711-A2.") == []
+    assert check_answer(
+        draft(steps=[], missing_information=["Is AB-471 right?"]), {"S1": "Part CD-471"}
+    ) == ["part_number_not_in_source"]

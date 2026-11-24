@@ -12,7 +12,9 @@ Return only one JSON object, with exactly these keys:
   "search_terms_en": "the important English words for a text search, separated by spaces",
   "keywords_en": ["up to 20 short English keywords"],
   "part_numbers": ["part numbers or codes from the question, copied exactly, up to 10"],
-  "safety_flag": "normal" | "high_voltage" | "emergency"
+  "safety_flag": "normal" | "high_voltage" | "emergency",
+  "is_bypass": true | false,
+  "is_wiring": true | false
 }
 
 How to pick `safety_flag`:
@@ -25,6 +27,20 @@ How to pick `safety_flag`:
   steering, bodywork).
 
 When in doubt between two levels, pick the stricter one.
+
+How to pick `is_bypass` (a JSON true or false, never a string):
+
+- true: the question asks to switch off, skip, jump, override or work around a protection (an
+  emergency stop, an interlock, a seat switch, a sensor, the BMS or any safety function), or to
+  open a battery pack.
+- false: every other question.
+
+How to pick `is_wiring`:
+
+- true: the question is about wires, cables, connectors, pins, wire colours or a wiring diagram.
+- false: every other question (a brake or throttle cable that needs adjusting is not wiring).
+
+For `is_bypass` and `is_wiring`, when in doubt: true.
 
 Keep part numbers exactly as written. Do not invent keywords that are not in the question. Write
 no text outside the JSON object.
