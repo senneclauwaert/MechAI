@@ -7,7 +7,7 @@ and the pipeline decide what happens with a draft; these shapes only validate it
 import uuid
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
 
 
 class Translation(BaseModel):
@@ -53,6 +53,16 @@ class AnswerDraft(BaseModel):
     warnings: list[WarningDraft] = Field(max_length=10)
     confidence: Literal["low", "medium", "high"]
     missing_information: list[Annotated[str, Field(max_length=300)]] = Field(max_length=10)
+
+
+class AskIn(BaseModel):
+    """The request of POST /ask. The question is stripped before the length check."""
+
+    question: Annotated[str, StringConstraints(strip_whitespace=True, min_length=2, max_length=500)]
+    kart_number: str | None = Field(
+        default=None, min_length=1, max_length=10, pattern=r"^[0-9A-Za-z-]+$"
+    )
+    input: Literal["typed", "voice"] = "typed"
 
 
 # What `ask()` returns to the caller (the endpoint of B6 sends it as it is).
