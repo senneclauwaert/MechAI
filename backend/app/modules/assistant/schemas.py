@@ -1,9 +1,10 @@
-"""Shapes of what the model returns for the assistant: the translation and the answer draft.
+"""Shapes of the assistant: the model output (translation, draft) and the result of `ask()`.
 
 Unknown keys in the model output are ignored (the Pydantic default). The checks in `checks.py`
 and the pipeline decide what happens with a draft; these shapes only validate its form.
 """
 
+import uuid
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
@@ -52,3 +53,56 @@ class AnswerDraft(BaseModel):
     warnings: list[WarningDraft] = Field(max_length=10)
     confidence: Literal["low", "medium", "high"]
     missing_information: list[Annotated[str, Field(max_length=300)]] = Field(max_length=10)
+
+
+# What `ask()` returns to the caller (the endpoint of B6 sends it as it is).
+class StepOut(BaseModel):
+    """A step or a warning of a checked answer, with the sources (S1, ...) it is based on."""
+
+    text: str
+    sources: list[str]
+
+
+class PartOut(BaseModel):
+    """A part of a checked answer."""
+
+    name: str
+    part_number: str | None
+    source: str
+
+
+class AnswerOut(BaseModel):
+    """A checked answer; only present when every check passed."""
+
+    steps: list[StepOut]
+    parts: list[PartOut]
+    warnings: list[StepOut]
+    confidence: Literal["low", "medium", "high"]
+    missing_information: list[str]
+
+
+class SourceOut(BaseModel):
+    """A handbook section the answer step looked at: where to find it, never its text."""
+
+    id: str  # S1 .. S5
+    section_id: uuid.UUID
+    section_number: str | None
+    heading_path: str
+    page_start: int | None
+    page_end: int | None
+    document_title: str
+    revision: str | None
+
+
+class AskOut(BaseModel):
+    """The result of one question. `answer` is filled only when `outcome` is "answer"."""
+
+    trace_id: str | None  # null only when saving an emergency or refused trace failed
+    outcome: Literal[
+        "answer", "not_in_handbook", "retrieval_only", "high_voltage", "emergency", "refused"
+    ]
+    safety_level: Literal["normal", "high_voltage", "emergency"]
+    question_language: Literal["nl", "fr", "en"] | None
+    answer: AnswerOut | None
+    sources: list[SourceOut]
+    reason_code: str | None
