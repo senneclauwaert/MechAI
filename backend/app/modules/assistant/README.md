@@ -42,7 +42,7 @@ below), `KNOWLEDGE_NOTHING_EMBEDDED` (409, after the trace is saved), `CORE_VALI
 How a question runs: the word lists (`safety/words_v1.toml`) decide on the question as typed, before
 any AI call (hidden characters, punctuation inside a word and non-Latin look-alike letters do not
 hide a word); translate (1 call, which also returns `is_bypass` and `is_wiring`, both required);
-search through `knowledge.retrieve_sections`; answer (1 call, 1 retry on invalid output); then code
+search through `knowledge.retrieve_sections`; answer (1 call, 1 retry on invalid output or on evidence without steps); then code
 checks the cleaned answer (sources exist, every number and every code like `AB-471` or `M8` is in
 the cited sections, no high-voltage, emergency, bypass or wiring words). Every number must be in
 the text of a cited section (both numbers of "20-25 Nm"); the heading line never proves a number.

@@ -77,6 +77,9 @@ class PartDraft(BaseModel):
 class AnswerDraft(BaseModel):
     """The model's answer before the checks: steps, parts, warnings and what is missing."""
 
+    # What the model found in the sources. Only used to notice an answer without steps; it is
+    # handbook text, so it is left out of every dump (trace and response).
+    evidence: list[str] = Field(default_factory=list, max_length=20, exclude=True)
     steps: list[StepDraft] = Field(max_length=20)
     parts: list[PartDraft] = Field(max_length=20)
     warnings: list[WarningDraft] = Field(max_length=10)

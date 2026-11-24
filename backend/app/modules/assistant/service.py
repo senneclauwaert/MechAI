@@ -45,8 +45,10 @@ from app.modules.knowledge.service import Retrieval, RetrievedSection
 log = logging.getLogger("mechai.assistant")
 
 PROMPTS_DIR = Path(__file__).resolve().parents[3] / "prompts"
-TRANSLATE_VERSION = "translate_v1"
-ANSWER_VERSION = "answer_v3"  # v1 and v2 stay: old traces refer to them
+TRANSLATE_VERSION = "translate_v2"
+ANSWER_VERSION = "answer_v4"
+RETRY_VERSION = "answer_retry_v1"  # sent when the model found evidence but wrote no steps
+# Older prompt files stay: old traces refer to them.
 
 # Reason codes that are defined outside this module (llm.py and the knowledge module).
 AI_UNAVAILABLE = "ASSISTANT_AI_UNAVAILABLE"
@@ -69,6 +71,7 @@ def _read_prompt(version: str) -> str:
 
 TRANSLATE_PROMPT = _read_prompt(TRANSLATE_VERSION)
 ANSWER_PROMPT = _read_prompt(ANSWER_VERSION)
+RETRY_PROMPT = _read_prompt(RETRY_VERSION)
 
 
 # What we know about one question while it moves through the pipeline; it becomes the trace row.
@@ -201,6 +204,11 @@ def _parse[T: BaseModel](model: type[T], text: str) -> T | None:
         return None
 
 
+def _has_text(items: list[str]) -> bool:
+    """True when at least one item holds more than spaces."""
+    return any(item.strip() for item in items)
+
+
 def _keep_raw(run: _Run, call: str, text: str) -> None:
     """Keep a reply for the trace: one that could not be parsed, or an answer without steps."""
     run.raw_replies.append({"call": call, "text": _safe(text)[:TRACE_REPLY_CHARS]})
@@ -233,7 +241,8 @@ def _translate(run: _Run, llm: LLMClient | None) -> Translation | None:
 def _write_answer(
     run: _Run, llm: LLMClient, sections: list[RetrievedSection]
 ) -> AnswerDraft | None:
-    """The answer call, with one retry when the output is invalid or cut off.
+    """The answer call, with one retry when the output is invalid, cut off, or holds evidence but
+    no steps (then the retry asks for the steps).
 
     The draft is cleaned once here (see `_clean_draft`); the checks and the response use that
     version. Returns None and sets the reason when the call fails or the output stays invalid.
@@ -244,7 +253,7 @@ def _write_answer(
     messages = _answer_messages(run.question, sections)
     draft: AnswerDraft | None = None
     run.reason = errors.answer_invalid().code
-    for _attempt in range(2):
+    for attempt in range(2):
         try:
             reply = llm.chat(
                 messages, json_output=True, max_tokens=get_settings().answer_max_tokens
@@ -256,10 +265,20 @@ def _write_answer(
         run.tokens_in += reply.tokens_in
         run.tokens_out += reply.tokens_out
         draft = None if reply.truncated else _parse(AnswerDraft, reply.text)
+        no_steps = draft is not None and not draft.steps and _has_text(draft.evidence)
         if draft is not None:
             draft = _clean_draft(draft)
         if draft is None or not draft.steps:
             _keep_raw(run, "answer", reply.text)
+        if no_steps:  # found something but wrote nothing: not "not in the handbook"
+            draft = None
+            if attempt == 0:
+                run.prompt_versions["answer_retry"] = RETRY_VERSION
+                messages = [
+                    *messages,
+                    {"role": "assistant", "content": reply.text},
+                    {"role": "user", "content": RETRY_PROMPT},
+                ]
         if draft is not None:
             run.reason = None
             break

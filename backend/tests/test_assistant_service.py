@@ -217,7 +217,7 @@ def test_cited_answer_for_a_rear_axle_question_in_dutch(
     assert trace.kart_number == "07"
     assert trace.model == "scripted-chat"
     assert (trace.tokens_in, trace.tokens_out) == (210, 55)
-    assert trace.prompt_versions == {"translate": "translate_v1", "answer": "answer_v3"}
+    assert trace.prompt_versions == {"translate": "translate_v2", "answer": "answer_v4"}
     assert trace.best_similarity is not None and trace.best_similarity > 0.99
     assert len(trace.sections_sent) == 1
     assert trace.retrieved[0]["similarity"] > 0.99
@@ -809,7 +809,7 @@ def test_a_mechanical_row_of_a_mixed_torque_table_is_answered(
     assert [s.text for s in result.answer.steps] == [step]
     trace = trace_of(torque_table, result.trace_id)
     assert trace.flags == ["hv_section_sent"]
-    assert trace.prompt_versions["answer"] == "answer_v3"
+    assert trace.prompt_versions["answer"] == "answer_v4"
 
 
 # The prompt may let the model read a mixed table; the code still decides what is shown
@@ -850,7 +850,13 @@ def test_the_answer_prompt_sent_to_the_model_holds_the_current_rules(
     assert "answer the mechanical row that was asked for" in prompt
     assert "only when no source answers the question" in prompt
     assert "When `evidence` is filled, `steps` must not be empty" in prompt
-    for old in ("answer_v1.md", "answer_v2.md"):  # kept for the trace history
+    assert "must cite the source that contains that number" in prompt
+    for old in (
+        "answer_v1.md",
+        "answer_v2.md",
+        "answer_v3.md",
+        "translate_v1.md",
+    ):  # kept for the trace history
         assert (service.PROMPTS_DIR / old).exists()
 
 
@@ -927,6 +933,77 @@ def test_a_raw_reply_is_cleaned_cut_and_never_logged(
     assert kept.startswith("SECRETREPLYx")
     assert len(kept) == service.TRACE_REPLY_CHARS
     assert "SECRETREPLY" not in caplog.text
+
+
+# Evidence without steps: one retry that asks for the steps
+FOUND_NOTHING_WRITTEN = {**ANSWER, "steps": [], "evidence": ["Tighten the new nut to 25 Nm."]}
+
+
+def test_evidence_without_steps_is_retried_with_a_nudge(
+    handbook: Session, llm: ScriptedLLM
+) -> None:
+    first = ok(FOUND_NOTHING_WRITTEN)
+    llm.replies = [ok(TRANSLATION), first, ok(ANSWER)]
+    result = service.ask(handbook, QUESTION, None, "typed")
+    assert result.outcome == "answer"
+    assert llm.chat_calls[2] == [
+        *llm.chat_calls[1],
+        {"role": "assistant", "content": first.text},
+        {"role": "user", "content": service.RETRY_PROMPT},
+    ]
+    trace = trace_of(handbook, result.trace_id)
+    assert trace.prompt_versions["answer_retry"] == "answer_retry_v1"
+    assert trace.raw_replies == [{"call": "answer", "text": first.text}]
+    assert "evidence" not in trace.answer  # handbook text, never in the parsed answer
+
+
+def test_evidence_without_steps_twice_is_pages_only_not_not_in_the_handbook(
+    handbook: Session, llm: ScriptedLLM
+) -> None:
+    llm.replies = [ok(TRANSLATION), ok(FOUND_NOTHING_WRITTEN), ok(FOUND_NOTHING_WRITTEN)]
+    result = service.ask(handbook, QUESTION, None, "typed")
+    assert result.outcome == "retrieval_only"
+    assert result.reason_code == "ASSISTANT_ANSWER_INVALID"
+    assert result.answer is None
+    assert len(trace_of(handbook, result.trace_id).raw_replies) == 2
+
+
+def test_the_retry_may_still_say_not_in_the_handbook(handbook: Session, llm: ScriptedLLM) -> None:
+    empty = {**ANSWER, "steps": [], "evidence": []}
+    llm.replies = [ok(TRANSLATION), ok(FOUND_NOTHING_WRITTEN), ok(empty)]
+    assert service.ask(handbook, QUESTION, None, "typed").outcome == "not_in_handbook"
+
+
+@pytest.mark.parametrize("evidence", [[], [" "]])
+def test_empty_evidence_and_empty_steps_is_not_retried(
+    handbook: Session, llm: ScriptedLLM, evidence: list[str]
+) -> None:
+    llm.replies = [ok(TRANSLATION), ok({**ANSWER, "steps": [], "evidence": evidence})]
+    result = service.ask(handbook, QUESTION, None, "typed")
+    assert result.outcome == "not_in_handbook"
+    assert len(llm.chat_calls) == 2
+
+
+def test_the_steps_of_the_retry_are_checked_too(handbook: Session, llm: ScriptedLLM) -> None:
+    llm.replies = [ok(TRANSLATION), ok(FOUND_NOTHING_WRITTEN), one_step("Tighten to 99 Nm.")]
+    result = service.ask(handbook, QUESTION, None, "typed")
+    assert result.outcome == "retrieval_only"
+    assert "number_not_in_source" in trace_of(handbook, result.trace_id).flags
+
+
+def test_an_invalid_reply_is_retried_without_the_nudge(handbook: Session, llm: ScriptedLLM) -> None:
+    llm.replies = [ok(TRANSLATION), ChatResult("not json", 1, 1), ok(ANSWER)]
+    result = service.ask(handbook, QUESTION, None, "typed")
+    assert llm.chat_calls[2] == llm.chat_calls[1]
+    assert "answer_retry" not in trace_of(handbook, result.trace_id).prompt_versions
+
+
+def test_the_translate_prompt_holds_the_glossary(handbook: Session, llm: ScriptedLLM) -> None:
+    llm.replies = [ok(TRANSLATION), ok(ANSWER)]
+    service.ask(handbook, QUESTION, None, "typed")
+    prompt = " ".join(llm.chat_calls[0][0]["content"].split())
+    assert '= steering knuckle. Never "fuse"' in prompt
+    assert "Disabling, bridging or switching it off is a bypass" in prompt
 
 
 def test_no_raw_reply_is_kept_for_a_normal_answer(handbook: Session, llm: ScriptedLLM) -> None:
