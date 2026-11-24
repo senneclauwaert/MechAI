@@ -21,7 +21,7 @@ x-backend: &backend
 services:
   # PostgreSQL with the pgvector extension. Data lives in the pgdata volume.
   db:
-    image: pgvector/pgvector:pg16
+    image: pgvector/pgvector:0.8.7-pg16 # 0.8.0 or newer is needed for hnsw.iterative_scan
     env_file: .env
     volumes:
       - pgdata:/var/lib/postgresql/data

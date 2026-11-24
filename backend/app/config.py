@@ -49,9 +49,25 @@ class Settings(BaseSettings):
     page_image_dpi: int = Field(default=150, ge=72, le=300)
     max_pdf_pages: int = Field(default=500, ge=1, le=5000)
     # Handbook text goes to the AI provider only after Supercube's written OK; it also needs
-    # ai_enabled (a real client is never used for embeddings when either one is off)
+    # ai_enabled. Ingestion refuses a real client when either one is off, and the retrieval of
+    # sections skips the query embedding when ai_enabled is off (text search only).
+    # It covers ALL handbook text sent to Mistral (embeddings and chat); the name stays for now.
     allow_external_embeddings: bool = False
     docling_models_dir: str = "/opt/docling-models"
+
+    # Assistant
+    # Below this best similarity score the answer is "not in the handbook".
+    # 0.70 is a placeholder until it is measured on real questions.
+    refusal_threshold: float = Field(default=0.70, ge=0, le=1)
+    answer_sections: int = Field(default=5, ge=1, le=10)  # handbook sections given to the AI
+    answer_source_tokens: int = Field(default=6000, ge=500, le=20000)  # max source text per answer
+    answer_max_tokens: int = Field(default=800, ge=100, le=4000)  # max tokens the AI may write
+    ai_timeout_seconds: int = Field(
+        default=20, ge=1, le=120
+    )  # per chat call and per single embedding
+    # Per embedding call with more than one text (an ingestion batch of 64 texts)
+    embed_batch_timeout_seconds: int = Field(default=60, ge=1, le=600)
+    daily_question_cap: int = Field(default=300, ge=1, le=100000)  # questions per day, all users
 
     # Worker
     worker_poll_seconds: float = 5.0

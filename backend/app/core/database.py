@@ -12,7 +12,8 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sess
 from app.config import get_settings
 
 # One engine (connection pool) for the whole process; pre_ping drops dead connections.
-engine = create_engine(get_settings().db_url, pool_pre_ping=True)
+# hide_parameters keeps bound values (search terms, ...) out of database error messages and logs.
+engine = create_engine(get_settings().db_url, pool_pre_ping=True, hide_parameters=True)
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
 

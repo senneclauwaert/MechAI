@@ -9,6 +9,31 @@ hybrid search over the chunks.
 - `GET /api/v1/knowledge/search?q=...`: hybrid search (vector top 20 + full-text top 20, merged
   with RRF) and returns the best 5 chunks with both ranks, so you can see which search found what.
 
+**For the assistant** (called from Python, no endpoint):
+- `retrieve_sections(db, query, keywords, part_numbers, *, use_embeddings=True)` returns a
+  `Retrieval`: the best 20 chunks with their ranks and similarity, the parent sections to give to
+  the answer step, `best_similarity` and `embedding_error`. It only searches current handbook text
+  (`source_type = handbook`, not superseded); Playground text never counts. `query` is a full
+  English sentence for the vector search (top 20 by cosine distance, `similarity = 1 - distance`;
+  the refusal threshold is measured on this score, never on the RRF score). The full-text search
+  (top 20) ORs the keywords, because `websearch_to_tsquery` would AND them, and chunks with one of
+  the part numbers (max 10, max 50 characters) come first. Both lists are merged with RRF; the
+  sections are kept in order of their best chunk, at most `ANSWER_SECTIONS` of them, and a section
+  that would pass `ANSWER_SOURCE_TOKENS` is skipped (the first one is always kept). A section is
+  never cut. It raises `KNOWLEDGE_NOTHING_EMBEDDED` when there is no handbook chunk (or none
+  embedded with the current model). If the query embedding fails, the text hits are still returned
+  and `embedding_error` holds the code. With `use_embeddings=False`, or with `AI_ENABLED=false`,
+  no AI client is created and there is no vector search (text hits only).
+  `best_similarity` is the highest similarity among chunks of the sections that are really
+  returned. A similarity that is not a number (a zero vector) counts as no score (`None`), and
+  that chunk is not a vector hit. NUL and other control characters are replaced by a space in
+  the query, the keywords and the part numbers; when the keywords hold no usable word, the words
+  of the query are used. Search terms are never logged (the database engine hides parameters).
+  The vector search needs pgvector 0.8.0 or newer (`hnsw.iterative_scan`); `compose.yaml` pins it.
+- `external_text_allowed(llm)`: true for the fake client, else only when `ALLOW_EXTERNAL_EMBEDDINGS`
+  and `AI_ENABLED` are both `true`. Embedding uses it, and so does the assistant before it sends
+  handbook text to the chat model.
+
 **Handbook ingestion** (dev only until #26 adds the admin check; refused when `ENVIRONMENT=prod`):
 - `POST /api/v1/knowledge/documents`: multipart with `file` (a PDF), `title` (1-300), `revision`
   (optional, max 50) and `kart_model` (optional, max 100). Returns `201` for a new file, or `200`
