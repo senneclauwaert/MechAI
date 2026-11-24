@@ -41,6 +41,7 @@ fr = [
   "brule*+mecanicien", "brule*+pilote",
 ]
 en = [
+  "shocked", "shocks+me",
   "smoke", "smoking", "fire", "on fire", "burning smell", "swollen", "hot+battery", "injured",
   "electrocut", "explosion", "flames", "smokes", "smells+burning", "smells+burnt",
   "electric shock", "is burning", "burning+kart",

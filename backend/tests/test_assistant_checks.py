@@ -1050,3 +1050,11 @@ def test_an_ignored_word_is_blanked_only_as_a_whole_word() -> None:
     """ "laadruimtekabel" is high voltage through "laad*" only; blanking inside it would hide it."""
     assert question_level("laadruimtekabel") == "high_voltage"
     assert question_level("De laadruimte is vuil") == "normal"
+
+
+# Other forms of "shock" are an emergency too
+@pytest.mark.parametrize(
+    "text", ["I was shocked by the kart", "I got shocked", "the kart shocks me"]
+)
+def test_being_shocked_is_an_emergency(text: str) -> None:
+    assert question_level(text) == "emergency"
