@@ -4,7 +4,8 @@ It covers:
 - handbook ingestion: PDF -> pages (text + PNG) -> sections -> chunks -> embeddings,
   run by the worker after an upload;
 - the playground: add a text, the worker embeds it;
-- hybrid search (vector + full-text, merged with RRF) over the chunks.
+- hybrid search (vector + full-text, merged with RRF) over the chunks;
+- retrieval of whole parent sections for the assistant (`retrieve_sections`).
 """
 
 import hashlib
@@ -15,7 +16,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import Select, case, delete, func, or_, select
+from sqlalchemy import text as sql_text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -257,12 +259,17 @@ def make_chunks(text: str, chunk_tokens: int, overlap_tokens: int) -> list[str]:
 
 
 # Embeddings
-def _check_external_embeddings(llm: LLMClient) -> None:
-    """A real AI client only gets text when both settings allow it; the fake client always may."""
+def external_text_allowed(llm: LLMClient) -> bool:
+    """True when handbook text may go to this client: the fake one always, else both settings."""
     settings = get_settings()
     if isinstance(llm, FakeLLM):
-        return
-    if not (settings.allow_external_embeddings and settings.ai_enabled):
+        return True
+    return settings.allow_external_embeddings and settings.ai_enabled
+
+
+def _check_external_embeddings(llm: LLMClient) -> None:
+    """Raise when this client may not get text (see external_text_allowed)."""
+    if not external_text_allowed(llm):
         raise errors.external_embeddings_off()
 
 
@@ -611,6 +618,52 @@ def document_status(db: Session, document_id: uuid.UUID) -> dict[str, Any]:
     }
 
 
+# Search helpers, used by search() and retrieve_sections()
+def _vector_hits(
+    db: Session, base: Select[Any], query_vector: list[float]
+) -> list[tuple[Chunk, float]]:
+    """The 20 chunks closest in meaning, as (chunk, cosine distance), closest first.
+
+    `base` is a select of Chunk that already holds the filters. The rows are sorted again here
+    because an HNSW scan in relaxed order may return them slightly out of order.
+    """
+    distance = Chunk.embedding.cosine_distance(query_vector)
+    rows = db.execute(base.add_columns(distance).order_by(distance).limit(20)).all()
+    return sorted(((chunk, float(dist)) for chunk, dist in rows), key=lambda row: row[1])
+
+
+def _text_hits(
+    db: Session,
+    base: Select[Any],
+    ts_input: str,
+    part_numbers: list[str] | None = None,
+) -> list[Chunk]:
+    """The 20 chunks that best match the words, best first.
+
+    Chunks that contain one of the part numbers (exact words, no stemming) come before the rest.
+    """
+    ts_query = func.websearch_to_tsquery("english", ts_input)
+    word_match = Chunk.tsv.op("@@")(ts_query)
+    part_matches = [
+        func.to_tsvector("simple", Chunk.text).op("@@")(func.plainto_tsquery("simple", part))
+        for part in part_numbers or []
+    ]
+    stmt = base.where(or_(word_match, *part_matches))
+    if part_matches:
+        stmt = stmt.order_by(case((or_(*part_matches), 0), else_=1))
+    stmt = stmt.order_by(func.ts_rank(Chunk.tsv, ts_query).desc(), Chunk.id).limit(20)
+    return list(db.scalars(stmt).all())
+
+
+def _rrf_score(vector_rank: int | None, text_rank: int | None) -> float:
+    """Reciprocal Rank Fusion: the sum of 1 / (60 + rank) over the lists the chunk is in."""
+    score = 0.0
+    for rank in (vector_rank, text_rank):
+        if rank is not None:
+            score += 1 / (RRF_K + rank)
+    return score
+
+
 # Search
 def search(db: Session, question: str, limit: int = 5) -> list[dict[str, Any]]:
     """Hybrid search: vector top 20 + full-text top 20, merged with RRF (vault: RAG pipeline)."""
@@ -622,21 +675,10 @@ def search(db: Session, question: str, limit: int = 5) -> list[dict[str, Any]]:
 
     # 1. Vector search: the 20 chunks closest in meaning (cosine distance).
     query_vector = llm.embed([question])[0]
-    by_vector = db.scalars(
-        select(Chunk)
-        .where(active)
-        .order_by(Chunk.embedding.cosine_distance(query_vector))
-        .limit(20)
-    ).all()
+    by_vector = [chunk for chunk, _ in _vector_hits(db, select(Chunk).where(active), query_vector)]
 
     # 2. Full-text search: the 20 chunks that best match the words of the question.
-    ts_query = func.websearch_to_tsquery("english", question)
-    by_text = db.scalars(
-        select(Chunk)
-        .where(Chunk.tsv.op("@@")(ts_query))
-        .order_by(func.ts_rank(Chunk.tsv, ts_query).desc())
-        .limit(20)
-    ).all()
+    by_text = _text_hits(db, select(Chunk), question)
 
     # 3. Merge both lists with Reciprocal Rank Fusion: a chunk scores higher the better it
     # ranks in either list, and highest when it is in both.
@@ -644,13 +686,9 @@ def search(db: Session, question: str, limit: int = 5) -> list[dict[str, Any]]:
     text_rank = {c.id: i + 1 for i, c in enumerate(by_text)}
     chunks = {c.id: c for c in [*by_vector, *by_text]}
 
-    # RRF score: the sum of 1 / (60 + rank) over the lists the chunk appears in.
+    # RRF score of one chunk
     def rrf(chunk_id: uuid.UUID) -> float:
-        score = 0.0
-        for ranks in (vector_rank, text_rank):
-            if chunk_id in ranks:
-                score += 1 / (RRF_K + ranks[chunk_id])
-        return score
+        return _rrf_score(vector_rank.get(chunk_id), text_rank.get(chunk_id))
 
     best = sorted(chunks, key=rrf, reverse=True)[:limit]
     return [
@@ -664,3 +702,180 @@ def search(db: Session, question: str, limit: int = 5) -> list[dict[str, Any]]:
         }
         for cid in best
     ]
+
+
+# Retrieval of parent sections for the assistant
+@dataclass(frozen=True)
+class RetrievedChunk:
+    """One chunk that the search found, with its ranks and scores (kept for the trace)."""
+
+    chunk_id: uuid.UUID
+    section_id: uuid.UUID
+    vector_rank: int | None
+    text_rank: int | None
+    similarity: float | None  # 1 - cosine distance; None when the vector search did not find it
+    score: float  # RRF score: only for ordering, never for the "not in the handbook" decision
+
+
+@dataclass(frozen=True)
+class RetrievedSection:
+    """A whole handbook section (never cut) with the data needed to cite it."""
+
+    section_id: uuid.UUID
+    section_number: str | None
+    heading_path: str
+    page_start: int | None
+    page_end: int | None
+    text: str
+    token_count: int
+    safety_level: str
+    document_title: str
+    revision: str | None
+
+
+@dataclass(frozen=True)
+class Retrieval:
+    """The result of retrieve_sections."""
+
+    chunks: list[RetrievedChunk]  # the best 20 chunks, best first
+    sections: list[RetrievedSection]  # the sections for the answer step, best first
+    best_similarity: float | None  # highest cosine similarity of the vector hits, or None
+    embedding_error: str | None  # error code when the query could not be embedded
+
+
+MAX_PART_NUMBERS = 10
+MAX_PART_NUMBER_CHARS = 50
+MAX_TEXT_WORDS = 30
+
+
+# Chunks of current handbook text only: no Playground text, no superseded documents.
+def _handbook_chunks() -> Select[Any]:
+    return (
+        select(Chunk)
+        .join(Section, Chunk.section_id == Section.id)
+        .join(Document, Section.document_id == Document.id)
+        .where(Document.source_type == "handbook", Document.superseded_by.is_(None))
+    )
+
+
+def _text_search_input(keywords: list[str], query: str) -> str:
+    """Words for websearch_to_tsquery, joined with "or" because that function ANDs its words.
+
+    Only letters, digits and underscores survive, so quotes and hyphens cannot change the query.
+    """
+    source = " ".join(keywords) if keywords else query
+    words: list[str] = []
+    seen: set[str] = set()
+    for word in re.findall(r"\w+", source):
+        key = word.lower()
+        if key != "or" and key not in seen:
+            seen.add(key)
+            words.append(word)
+    return " or ".join(words[:MAX_TEXT_WORDS])
+
+
+def _pick_sections(db: Session, ranked_section_ids: list[uuid.UUID]) -> list[RetrievedSection]:
+    """Load the sections (best first, from the ranked chunks) that fit the limits.
+
+    At most `answer_sections` sections, and no section that would pass `answer_source_tokens`;
+    the first one is always kept, however long. A section is never cut.
+    """
+    settings = get_settings()
+    order = list(dict.fromkeys(ranked_section_ids))  # each section once, best chunk first
+    rows = db.execute(
+        select(Section, Document.title, Document.revision)
+        .join(Document, Section.document_id == Document.id)
+        .where(Section.id.in_(order))
+    ).all()
+    found = {section.id: (section, title, revision) for section, title, revision in rows}
+
+    picked: list[RetrievedSection] = []
+    tokens = 0
+    for section_id in order:
+        if len(picked) >= settings.answer_sections:
+            break
+        section, title, revision = found[section_id]
+        if picked and tokens + section.token_count > settings.answer_source_tokens:
+            continue
+        tokens += section.token_count
+        picked.append(
+            RetrievedSection(
+                section_id=section.id,
+                section_number=section.section_number,
+                heading_path=section.heading_path,
+                page_start=section.page_start,
+                page_end=section.page_end,
+                text=section.text,
+                token_count=section.token_count,
+                safety_level=section.safety_level,
+                document_title=title,
+                revision=revision,
+            )
+        )
+    return picked
+
+
+def retrieve_sections(
+    db: Session,
+    query: str,
+    keywords: list[str],
+    part_numbers: list[str],
+    *,
+    use_embeddings: bool = True,
+) -> Retrieval:
+    """Hybrid search over current handbook text; returns the parent sections of the best chunks.
+
+    `query` is a full English sentence: the vector search and the similarity score use it.
+    `keywords` and `part_numbers` feed the full-text search. When the query cannot be embedded,
+    the text hits are still returned and `embedding_error` holds the error code.
+    """
+    base = _handbook_chunks()
+    if not db.scalar(select(func.count()).select_from(base.subquery())):
+        raise errors.nothing_embedded()
+
+    vector_hits: list[tuple[Chunk, float]] = []
+    embedding_error: str | None = None
+    if use_embeddings:
+        llm = get_llm()  # only here: without embeddings no client is created
+        active = base.where(
+            Chunk.embedding_model == llm.embedding_model, Chunk.embedding.is_not(None)
+        )
+        if not db.scalar(select(func.count()).select_from(active.subquery())):
+            raise errors.nothing_embedded()
+        try:
+            query_vector = llm.embed([query])[0]
+        except AppError as exc:
+            log.warning("query embedding failed: %s", exc.code)  # the code only, never the text
+            embedding_error = exc.code
+        else:
+            db.execute(sql_text("SET LOCAL hnsw.iterative_scan = relaxed_order"))
+            vector_hits = _vector_hits(db, active, query_vector)
+
+    parts = [part.strip() for part in part_numbers]
+    parts = [p for p in parts if p and len(p) <= MAX_PART_NUMBER_CHARS][:MAX_PART_NUMBERS]
+    text_hits = _text_hits(db, base, _text_search_input(keywords, query), parts)
+
+    # Merge both lists with RRF; the best 20 chunks, ties broken by chunk id
+    vector_rank = {c.id: i + 1 for i, (c, _) in enumerate(vector_hits)}
+    similarity = {c.id: 1 - dist for c, dist in vector_hits}
+    text_rank = {c.id: i + 1 for i, c in enumerate(text_hits)}
+    found = {c.id: c for c in [*(c for c, _ in vector_hits), *text_hits]}
+    scores = {cid: _rrf_score(vector_rank.get(cid), text_rank.get(cid)) for cid in found}
+    best = sorted(found, key=lambda cid: (-scores[cid], cid))[:20]
+
+    return Retrieval(
+        chunks=[
+            RetrievedChunk(
+                chunk_id=cid,
+                section_id=found[cid].section_id,
+                vector_rank=vector_rank.get(cid),
+                text_rank=text_rank.get(cid),
+                similarity=similarity.get(cid),
+                score=scores[cid],
+            )
+            for cid in best
+        ],
+        sections=_pick_sections(db, [found[cid].section_id for cid in best]),
+        best_similarity=max(similarity.values()) if similarity else None,
+        embedding_error=embedding_error,
+    )
