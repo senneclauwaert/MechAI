@@ -289,3 +289,41 @@ def test_translation_needs_a_valid_safety_flag() -> None:
     with pytest.raises(ValidationError):
         Translation.model_validate({**data, "safety_flag": "dangerous"})
     assert Translation.model_validate({**data, "safety_flag": "normal"}).safety_flag == "normal"
+
+
+# Other ways to say smoke, fire and charging
+@pytest.mark.parametrize(
+    ("text", "level"),
+    [
+        ("de motor staat in vuur", "emergency"),
+        ("het ruikt verbrand", "emergency"),
+        ("le moteur fume", "emergency"),
+        ("il y a le feu", "emergency"),
+        ("it smokes a lot", "emergency"),
+        ("smells like burning", "emergency"),
+        ("het laadstation werkt niet", "high_voltage"),
+        ("recharger le kart", "high_voltage"),
+        ("le feu arriere est casse", "normal"),
+    ],
+)
+def test_other_phrases(text: str, level: str) -> None:
+    assert question_level(text) == level
+
+
+# A piece of a longer part number is not that part number
+@pytest.mark.parametrize(
+    ("part_number", "found"),
+    [("4711-A", True), ("47 11-a", True), ("471", False), ("4711", False), ("711-A", False)],
+)
+def test_part_number_must_be_whole(part_number: str, found: bool) -> None:
+    draft = AnswerDraft.model_validate(
+        {
+            "steps": [],
+            "parts": [{"name": "Bearing", "part_number": part_number, "source": "S1"}],
+            "warnings": [],
+            "confidence": "high",
+            "missing_information": [],
+        }
+    )
+    flags = check_answer(draft, {"S1": "Bearing 4711-A, rear axle"})
+    assert ("part_number_not_in_source" not in flags) == found

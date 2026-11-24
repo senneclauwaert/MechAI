@@ -132,9 +132,16 @@ def numbers_in(text: str) -> set[Decimal]:
     return {Decimal(m.replace(",", ".")).normalize() for m in _NUMBER_RE.findall(plain)}
 
 
-def _squash(text: str) -> str:
-    """Lower case without spaces, to compare part numbers."""
-    return "".join(text.split()).casefold()
+def _has_part_number(part_number: str, source_text: str) -> bool:
+    """True when the source holds exactly this part number; spaces and case do not matter.
+
+    It may not be a piece of a longer one: "471" is not found in "4711" or "471-A".
+    """
+    characters = "".join(part_number.split()).casefold()
+    if not characters:
+        return False
+    pattern = r"\s*".join(re.escape(char) for char in characters)
+    return re.search(rf"(?<![\w-]){pattern}(?![\w-])", source_text.casefold()) is not None
 
 
 def _strip_refs(text: str) -> str:
@@ -175,7 +182,7 @@ def check_answer(answer: AnswerDraft, sources: dict[str, str]) -> list[str]:
         check_numbers(part.name, source_text)
         if part.part_number:
             texts.append(part.part_number)
-            if _squash(part.part_number) not in _squash(source_text):
+            if not _has_part_number(part.part_number, source_text):
                 flags.add("part_number_not_in_source")
 
     all_sources = "\n".join(sources.values())

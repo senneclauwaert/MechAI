@@ -10,15 +10,17 @@
 nl = [
   "rook", "rookt", "brandgeur", "brandlucht", "in brand", "opgezwollen", "gezwollen",
   "warm+batterij", "heet+batterij", "hete+batterij", "hete+accu", "gewond",
-  "geelektrocuteerd", "explosie", "ontplof", "vlammen", "brandt",
+  "geelektrocuteerd", "explosie", "ontplof", "vlammen", "brandt", "vuur",
+  "ruikt+verbrand",
 ]
 fr = [
   "fumee", "en feu", "odeur de brule", "gonfle", "gonflee", "chaude+batterie", "blesse",
-  "explosion", "flammes",
+  "explosion", "flammes", "fume", "fument", "il y a le feu", "prend feu", "pris feu",
+  "sent le brule",
 ]
 en = [
   "smoke", "smoking", "fire", "on fire", "burning smell", "swollen", "hot+battery", "injured",
-  "electrocut", "explosion", "flames",
+  "electrocut", "explosion", "flames", "smokes", "smells+burning", "smells+burnt",
 ]
 
 [bypass]
@@ -35,11 +37,11 @@ en = [
 [high_voltage]
 nl = [
   "batterij", "accu", "accus", "accupack", "lader", "laders", "oplader", "laden", "opladen",
-  "controller", "omvormer", "hoogspanning", "motorkabel", "isolatie", "zekering",
+  "controller", "omvormer", "hoogspanning", "motorkabel", "isolatie", "zekering", "oplaad", "laadstation",
 ]
 fr = [
   "batterie", "chargeur", "controleur", "onduleur", "contacteur", "fusible", "haute tension",
-  "isolation",
+  "isolation", "recharg",
 ]
 en = [
   "battery", "batteries", "bms", "charger", "charging", "controller", "inverter", "contactor",
