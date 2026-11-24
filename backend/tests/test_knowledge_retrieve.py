@@ -388,6 +388,69 @@ def test_rrf_scores_and_order(empty_db: Session, monkeypatch: pytest.MonkeyPatch
     assert [c.chunk_id for c in result.chunks] == [both.id, text_only.id, vector_only.id]
 
 
+def test_equal_distances_are_ordered_by_chunk_id(
+    empty_db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    use_query_vector(monkeypatch, unit(1.0))
+    section = make_section(empty_db, make_document(empty_db))
+    # 25 identical vectors, more than the 20 that are kept, saved in descending id order
+    ids = sorted(uuid.uuid4() for _ in range(25))
+    for chunk_id in reversed(ids):
+        chunk = Chunk(
+            id=chunk_id,
+            section_id=section.id,
+            text="seat",
+            content_hash=uuid.uuid4().hex,
+            embedding=unit(1.0),
+            embedding_model=FAKE.embedding_model,
+        )
+        empty_db.add(chunk)
+        empty_db.flush()
+
+    result = service.retrieve_sections(empty_db, "q", ["axle"], [])
+
+    assert [c.chunk_id for c in result.chunks] == ids[:20]
+    assert [c.vector_rank for c in result.chunks] == list(range(1, 21))
+
+
+def test_vector_hits_sort_equal_distances_again_in_python() -> None:
+    first, second = sorted(uuid.uuid4() for _ in range(2))
+
+    # A session whose rows come back in the wrong id order (a relaxed HNSW scan may do this)
+    class WrongOrderSession:
+        def execute(self, stmt: Any) -> "WrongOrderSession":
+            return self
+
+        def all(self) -> list[tuple[Chunk, float]]:
+            return [(Chunk(id=second), 0.5), (Chunk(id=first), 0.5)]
+
+    session: Any = WrongOrderSession()
+    hits = service._vector_hits(session, service.select(Chunk), unit(1.0))
+    assert [chunk.id for chunk, _ in hits] == [first, second]
+
+
+def test_search_breaks_score_ties_by_chunk_id(
+    empty_db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    use_query_vector(monkeypatch, unit(1.0))
+    section = make_section(empty_db, make_document(empty_db))
+    low, high = sorted(uuid.uuid4() for _ in range(2))
+    # Both are rank 1 in one list only, so both score 1/61; the text-only chunk has the lower id
+    vector_only = Chunk(id=high, text="seat", embedding=unit(1.0))
+    vector_only.embedding_model = FAKE.embedding_model
+    text_only = Chunk(id=low, text="axle")
+    for chunk in (vector_only, text_only):
+        chunk.section_id = section.id
+        chunk.content_hash = uuid.uuid4().hex
+        empty_db.add(chunk)
+        empty_db.flush()
+
+    hits = service.search(empty_db, "axle")
+
+    assert [hit["chunk_id"] for hit in hits] == [str(low), str(high)]
+    assert hits[0]["score"] == hits[1]["score"]
+
+
 def test_ai_off_never_creates_a_client(empty_db: Session, monkeypatch: pytest.MonkeyPatch) -> None:
     section = make_section(empty_db, make_document(empty_db))
     chunk = make_chunk(empty_db, section, "Replace the rear axle bearing.")

@@ -629,12 +629,14 @@ def _vector_hits(
     `base` is a select of Chunk that already holds the filters. The rows are sorted again here
     because an HNSW scan in relaxed order may return them slightly out of order. A distance that
     is not a number (a zero vector has none) means "no score": that chunk is not a vector hit.
+    Equal distances are ordered by chunk id, so the ranks are the same on every call.
     """
     distance = Chunk.embedding.cosine_distance(query_vector)
-    rows = db.execute(base.add_columns(distance).order_by(distance).limit(20)).all()
+    rows = db.execute(base.add_columns(distance).order_by(distance, Chunk.id).limit(20)).all()
     hits = [(chunk, float(dist)) for chunk, dist in rows if dist is not None]
     return sorted(
-        ((chunk, dist) for chunk, dist in hits if math.isfinite(dist)), key=lambda r: r[1]
+        ((chunk, dist) for chunk, dist in hits if math.isfinite(dist)),
+        key=lambda row: (row[1], row[0].id),
     )
 
 
@@ -696,7 +698,8 @@ def search(db: Session, question: str, limit: int = 5) -> list[dict[str, Any]]:
     def rrf(chunk_id: uuid.UUID) -> float:
         return _rrf_score(vector_rank.get(chunk_id), text_rank.get(chunk_id))
 
-    best = sorted(chunks, key=rrf, reverse=True)[:limit]
+    # Highest score first, ties broken by chunk id
+    best = sorted(chunks, key=lambda cid: (-rrf(cid), cid))[:limit]
     return [
         {
             "chunk_id": str(cid),
