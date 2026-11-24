@@ -69,6 +69,7 @@ def assert_error(response: Any, status: int, code: str) -> None:
     assert error["reference"]
 
 
+# A normal question gives 200 with a cited answer and a stored trace (the question is stripped).
 def test_ask_returns_an_answer_and_stores_a_trace(
     client: TestClient, handbook: Session, llm: ScriptedLLM
 ) -> None:
@@ -89,6 +90,7 @@ def test_ask_returns_an_answer_and_stores_a_trace(
     assert trace.input == "typed"
 
 
+# An emergency is a normal 200 response: no answer, no sources, no AI call.
 def test_ask_returns_200_for_an_emergency(
     client: TestClient, handbook: Session, llm: ScriptedLLM
 ) -> None:
@@ -115,12 +117,14 @@ def test_ask_returns_200_for_an_emergency(
         {"question": QUESTION, "input": "video"},
     ],
 )
+# A bad body (empty, too short, too long, wrong kart number or input) gives the 422 error shape.
 def test_ask_rejects_a_bad_request(client: TestClient, body: dict[str, Any]) -> None:
     response = client.post(URL, json=body)
 
     assert_error(response, 422, "CORE_VALIDATION_FAILED")
 
 
+# Outside dev the endpoint answers 403 and calls nothing.
 def test_ask_is_not_allowed_in_prod(client: TestClient, llm: ScriptedLLM) -> None:
     get_settings().environment = "prod"
 
@@ -130,6 +134,7 @@ def test_ask_is_not_allowed_in_prod(client: TestClient, llm: ScriptedLLM) -> Non
     assert llm.chat_calls == []
 
 
+# At the daily cap a normal question gets 429 and no AI call.
 def test_ask_stops_at_the_daily_cap(
     client: TestClient, handbook: Session, llm: ScriptedLLM
 ) -> None:
@@ -145,6 +150,7 @@ def test_ask_stops_at_the_daily_cap(
     assert llm.chat_calls == []
 
 
+# No embedded handbook text and a normal question gives 409 in the error shape.
 def test_ask_gives_409_when_nothing_is_embedded(
     client: TestClient, db: Session, llm: ScriptedLLM
 ) -> None:
@@ -156,6 +162,7 @@ def test_ask_gives_409_when_nothing_is_embedded(
     assert_error(response, 409, "KNOWLEDGE_NOTHING_EMBEDDED")
 
 
+# The route is part of the OpenAPI schema.
 def test_the_endpoint_is_in_the_openapi_schema(client: TestClient) -> None:
     paths = client.get("/api/openapi.json").json()["paths"]
 

@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.modules.assistant.models import Trace
 
 
+# Every column of a trace survives a save and a read.
 def test_full_trace_is_saved_and_read_back(db: Session) -> None:
     trace = Trace(
         question="How do I check the tyre pressure?",
@@ -44,6 +45,7 @@ def test_full_trace_is_saved_and_read_back(db: Session) -> None:
     assert saved.created_at is not None
 
 
+# A trace with only the required columns gets defaults, and None is SQL NULL.
 def test_minimal_trace_gets_defaults_and_sql_null(db: Session) -> None:
     trace = Trace(
         question="Where is the fuse box?", input="voice", safety_level="normal", outcome="refused"

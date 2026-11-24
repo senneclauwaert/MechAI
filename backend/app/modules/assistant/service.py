@@ -1,10 +1,10 @@
 """The question pipeline of the assistant: from a mechanic's question to a checked answer.
 
-`ask()` follows the flow in the plan of issue #30, step by step:
-code safety check, daily cap, translate, search (knowledge module), decide, write the answer,
-verify it, save the trace. Code decides first and the AI second; the stricter safety level
-always wins. The AI never writes steps for high-voltage or emergency questions, and any failed
-check drops all generated steps. Every question leaves a trace row.
+`ask()` follows these steps: code safety check on the question as typed, daily cap, translate
+(one AI call), search (knowledge module), decide, write the answer, verify it, save the trace.
+Code decides first and the AI second; the stricter safety level always wins. The AI never writes
+steps for high-voltage or emergency questions, and any failed check drops all generated steps.
+Every question that gets past the access and cap checks leaves a trace row.
 
 Logs never carry the question, the answer, a prompt or handbook text.
 """
@@ -69,7 +69,8 @@ ANSWER_PROMPT = _read_prompt(ANSWER_VERSION)
 # What we know about one question while it moves through the pipeline; it becomes the trace row.
 @dataclass
 class _Run:
-    question: str
+    question: str  # cleaned (no NUL, no lone surrogates): for the model, the search and the trace
+    raw_question: str  # as typed: only the code safety gate reads it, so nothing is hidden
     kart_number: str | None
     input_kind: str
     level: str = "normal"
@@ -109,6 +110,17 @@ def _safe_json(value: Any) -> Any:
     if isinstance(value, float) and not math.isfinite(value):
         return None
     return value
+
+
+def _clean_draft(draft: AnswerDraft) -> AnswerDraft | None:
+    """The draft with every text cleaned, so the checks see exactly what the mechanic would see.
+
+    None when cleaning makes it invalid (for example a step that was only NUL characters).
+    """
+    try:
+        return AnswerDraft.model_validate(_safe_json(draft.model_dump()))
+    except ValidationError:
+        return None
 
 
 def _ms(since: float) -> int:
@@ -202,7 +214,8 @@ def _write_answer(
 ) -> AnswerDraft | None:
     """The answer call, with one retry when the output is invalid or cut off.
 
-    Returns None and sets the reason when the call fails or the output stays invalid.
+    The draft is cleaned once here (see `_clean_draft`); the checks and the response use that
+    version. Returns None and sets the reason when the call fails or the output stays invalid.
     """
     started = time.monotonic()
     run.prompt_versions["answer"] = ANSWER_VERSION
@@ -222,6 +235,8 @@ def _write_answer(
         run.tokens_in += reply.tokens_in
         run.tokens_out += reply.tokens_out
         draft = None if reply.truncated else _parse(AnswerDraft, reply.text)
+        if draft is not None:
+            draft = _clean_draft(draft)
         if draft is not None:
             run.reason = None
             break
@@ -245,12 +260,12 @@ def _check_daily_cap(db: Session) -> None:
 
 
 def _code_gate(run: _Run) -> bool:
-    """Step 1: the word lists decide before anything else. True when the question is stopped."""
-    run.level = checks.question_level(run.question)
+    """Step 1: the word lists decide on the question as typed. True when the question is stopped."""
+    run.level = checks.question_level(run.raw_question)
     if run.level == "emergency":
         run.outcome = "emergency"
         return True
-    if checks.is_bypass(run.question):
+    if checks.is_bypass(run.raw_question):
         run.outcome = "refused"
         return True
     return False
@@ -325,10 +340,10 @@ def _search(
 
 
 def _is_wiring(run: _Run, tr: Translation | None) -> bool:
-    """True when the question, its English terms or the AI flag say it is about wiring."""
-    english = _english_text(tr) if tr is not None else ""
-    flag = tr is not None and tr.is_wiring
-    return flag or checks.is_wiring(run.question) or checks.is_wiring(english)
+    """True when the question as typed, its English terms or the AI flag say it is about wiring."""
+    if checks.is_wiring(run.raw_question):
+        return True
+    return tr is not None and (tr.is_wiring or checks.is_wiring(_english_text(tr)))
 
 
 def _decide(run: _Run, retrieval: Retrieval, wiring: bool, llm: LLMClient | None) -> bool:
@@ -383,11 +398,11 @@ def _answer_step(run: _Run, llm: LLMClient, sections: list[RetrievedSection]) ->
         return
     run.outcome = "answer"
     run.answer = AnswerOut(
-        steps=[StepOut(**_safe_json(s.model_dump())) for s in draft.steps],
-        parts=[PartOut(**_safe_json(p.model_dump())) for p in draft.parts],
-        warnings=[StepOut(**_safe_json(w.model_dump())) for w in draft.warnings],
+        steps=[StepOut(**s.model_dump()) for s in draft.steps],
+        parts=[PartOut(**p.model_dump()) for p in draft.parts],
+        warnings=[StepOut(**w.model_dump()) for w in draft.warnings],
         confidence=draft.confidence,
-        missing_information=[_safe(m) for m in draft.missing_information],
+        missing_information=draft.missing_information,
     )
 
 
@@ -400,8 +415,21 @@ def _run_without_ai(db: Session, run: _Run) -> None:
 
 
 def _run_with_ai(db: Session, run: _Run) -> None:
-    """Steps 3 to 7 with the AI on."""
-    _check_daily_cap(db)  # before any AI call
+    """Steps 2 to 7 with the AI on.
+
+    At the daily cap a normal question gets the 429 at once (no trace). A high-voltage question
+    is a safety question: it is still logged, as `high_voltage` with the cap as reason, and then
+    gets the 429 after its trace is saved.
+    """
+    try:
+        _check_daily_cap(db)  # before any AI call
+    except AppError as exc:
+        if run.level != "high_voltage":
+            raise
+        run.outcome = "high_voltage"
+        run.reason = exc.code
+        run.raise_after = exc
+        return
     try:
         llm: LLMClient | None = get_llm()
     except AppError as exc:
@@ -536,16 +564,22 @@ def _log_result(run: _Run, trace_id: str | None, started: float) -> None:
 
 
 def ask(db: Session, question: str, kart_number: str | None, input_kind: str) -> AskOut:
-    """Answer one question from the handbook, or explain why not. Always saves a trace.
+    """Answer one question from the handbook, or explain why not, and save a trace.
 
-    Raises ASSISTANT_NOT_ALLOWED in prod (until login exists), ASSISTANT_DAILY_LIMIT when the cap
-    is reached, and KNOWLEDGE_NOTHING_EMBEDDED (after saving the trace) for a normal question
-    when no handbook text is embedded.
+    Raises ASSISTANT_NOT_ALLOWED in prod (until login exists, no trace) and
+    ASSISTANT_DAILY_LIMIT when the cap is reached (no trace, except for a high-voltage question:
+    its trace is saved first). KNOWLEDGE_NOTHING_EMBEDDED is raised after saving the trace, for a
+    normal question when no handbook text is embedded.
     """
     if get_settings().environment != "dev":
         raise errors.not_allowed()
     started = time.monotonic()
-    run = _Run(question=_safe(question), kart_number=kart_number, input_kind=input_kind)
+    run = _Run(
+        question=_safe(question),
+        raw_question=question,
+        kart_number=kart_number,
+        input_kind=input_kind,
+    )
     if not _code_gate(run):
         if get_settings().ai_enabled:
             _run_with_ai(db, run)
