@@ -23,6 +23,10 @@ nl = [
   "verbrand+handen", "verbrand+arm", "verbrand+vinger", "verbrand+vingers", "verbrand+gezicht",
   "verbrand+been", "ik ben verbrand", "me verbrand", "mij verbrand",
   "zich verbrand", "brandwond",
+  # a person who is hurt: gekwetst and gewond are above
+  "een schok", "verbrand+collega", "verbrand+voet", "verbrand+huid", "verbrand+vingers",
+  "verbrand+monteur", "verbrand+mecanicien", "verbrand+bestuurder", "verbrand+me",
+  "verbrand+mij", "verbrand+zich", "ruik+verbrand", "geur+verbrand",
 ]
 fr = [
   "fumee", "en feu", "odeur de brule", "chaude+batterie", "blesse",
@@ -30,11 +34,27 @@ fr = [
   "sent le brule", "choc electrique", "brulant+batterie",
   # "gonfle" also covers gonflee and gonfler; alone it means inflating a tyre
   "gonfle+batterie", "gonfle+accu*", "gonfle+pack", "gonfle+cellule",
+  # a person who is hurt or a burning smell ("brule*" also finds brulee and brulees)
+  "brulure", "electrocute", "je me suis brule", "s'est brule", "odeur+brule*",
+  "brule*+main", "brule*+mains", "brule*+bras", "brule*+doigt", "brule*+doigts",
+  "brule*+visage", "brule*+jambe", "brule*+pied", "brule*+peau", "brule*+collegue",
+  "brule*+mecanicien", "brule*+pilote",
 ]
 en = [
   "smoke", "smoking", "fire", "on fire", "burning smell", "swollen", "hot+battery", "injured",
   "electrocut", "explosion", "flames", "smokes", "smells+burning", "smells+burnt",
   "electric shock", "is burning", "burning+kart",
+  # a person who is hurt or a burning smell
+  "hurt", "shock", "got a shock", "electrocuted", "burnt smell", "burned smell",
+  "burned my", "burnt my", "got burned", "got burnt",
+  "burned myself", "burned himself", "burned herself", "burned themselves",
+  "burnt myself", "burnt himself", "burnt herself", "burnt themselves",
+  "burned+hand", "burned+hands", "burned+arm", "burned+finger", "burned+fingers",
+  "burned+face", "burned+leg", "burned+foot", "burned+skin", "burned+colleague",
+  "burned+mechanic", "burned+driver",
+  "burnt+hand", "burnt+hands", "burnt+arm", "burnt+finger", "burnt+fingers",
+  "burnt+face", "burnt+leg", "burnt+foot", "burnt+skin", "burnt+colleague",
+  "burnt+mechanic", "burnt+driver",
 ]
 
 [bypass]
@@ -58,6 +78,7 @@ nl = [
   "remsensor+desactiv",
   "remsensor+shunt*",
   "schakel+noodstop+uit", "schakel+remsensor+uit",
+  "noodstop+uit", "noodstop+uitzetten", "remsensor+uitzetten",
 ]
 fr = [
   "shunter", "ouvrir+batterie", "desactiver+bms",
@@ -76,6 +97,7 @@ fr = [
   "capteur+defeat",
   "capteur+desactiv",
   "capteur+shunt*",
+  "contourn+arret d'urgence", "contourn+capteur", "contourn+securite",
 ]
 en = [
   "defeat+safety", "open+battery pack", "disable+bms",
@@ -101,6 +123,12 @@ en = [
   "seat sensor+defeat",
   "seat sensor+desactiv",
   "seat sensor+shunt*",
+  # turn off / switch off ("turn the emergency stop off" too)
+  "turn+off+emergency stop", "turn+off+brake sensor", "turn+off+seat sensor",
+  "turn+off+seat switch", "switch+off+emergency stop", "switch+off+brake sensor",
+  "switch+off+seat sensor", "switch+off+seat switch",
+  "disable+seat switch", "jump+seat switch", "bridge+seat switch", "defeat+seat switch",
+  "bypass+seat switch",
 ]
 
 [high_voltage]
@@ -111,11 +139,13 @@ nl = [
 ]
 fr = [
   "batterie", "chargeur", "controleur", "onduleur", "contacteur", "fusible", "haute tension",
-  "isolation", "recharg", "accumulateur",
+  "isolation", "recharg", "accumulateur", "charge", "cable moteur", "cables moteur",
+  "cable de phase", "cables de phase",
 ]
 en = [
   "battery", "batteries", "bms", "charger", "charging", "controller", "inverter", "contactor",
-  "fuse", "fuses", "high voltage", "hv", "motor cable", "insulation",
+  "fuse", "fuses", "high voltage", "hv", "motor cable", "insulation", "charge",
+  "phase cable", "phase cables",
 ]
 
 [wiring]
@@ -135,6 +165,9 @@ en = [
 
 # Whole words that look like a safety word but are not (blanked out before matching).
 [ignore]
-nl = ["accuraat", "gasregelaar", "gasregelaars", "laadruimte", "laadruimtes"]
+nl = [
+  "accuraat", "gasregelaar", "gasregelaars", "laadruimte", "laadruimtes",
+  "schokbreker", "schokbrekers", "schokdemper", "schokdempers",
+]
 fr = ["accueil", "accueillir", "accueille"]
-en = ["accurate", "accurately", "accuracy"]
+en = ["accurate", "accurately", "accuracy", "shock absorber", "shock absorbers"]

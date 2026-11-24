@@ -175,11 +175,14 @@ def _answer_messages(question: str, sections: list[RetrievedSection]) -> list[di
 
 def _check_sources(sections: list[RetrievedSection]) -> dict[str, checks.SourceText]:
     """What the answer check compares with: the original text, plus the section number, heading
-    path and page range as a separate label (a number with a unit must be in the text)."""
+    path and pages as a separate label and as a range (0 when unknown); a number must be in the
+    text."""
     sources: dict[str, checks.SourceText] = {}
     for i, s in enumerate(sections):
         label = f"{s.section_number or ''} {s.heading_path} pages {s.page_start}-{s.page_end}"
-        sources[_source_id(i)] = checks.SourceText(body=s.text, label=label)
+        sources[_source_id(i)] = checks.SourceText(
+            body=s.text, label=label, page_start=s.page_start or 0, page_end=s.page_end or 0
+        )
     return sources
 
 

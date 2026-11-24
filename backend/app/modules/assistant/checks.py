@@ -4,8 +4,8 @@ Two jobs:
 1. Decide from word lists (`safety/words_v1.toml`) whether a text is an emergency, a bypass
    request, a high-voltage topic or a wiring topic. Code decides first, the AI comes second.
 2. Check a generated answer against the handbook sections it cites: known sources, every number
-   and part number present in the cited text (a number with a unit must be in the body of a
-   section, not only in its label), and no unsafe or wiring words in generated text.
+   in the body of a cited section (only references like "p. 63" or "step 2" are exempt), every
+   part number in a cited section, and no unsafe or wiring words in generated text.
 """
 
 import re
@@ -37,36 +37,32 @@ _NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)?")
 # A token that starts with letters and holds a digit (AB-471, M8) is checked as a part number.
 # The lookbehind keeps "A2" out of "4711-A2": that one is a number, not a token.
 _CODE_RE = re.compile(r"(?<![\w/-])[A-Za-z][A-Za-z0-9/-]*")
-# Source references in generated text: "(S2)" or a bare "S2". A bare "S2" is a value, not a
-# reference, when a number or a unit follows it ("S1 Nm"). `_strip_refs` also checks the id.
-_UNITS = r"nm|n\u00b7m|kg|mm|cm|km|bar|psi|rpm|hz|ah|kwh|wh|kw|v|w"
-_SOURCE_REF_RE = re.compile(
-    r"\((S\d{1,2})\)"
-    rf"|\b(S\d{{1,2}})\b(?!\s*(?:\d|[\u00b0%]|(?i:{_UNITS})\b))"
+# Reference patterns (case ignored). A unit after one ("p. 63 Nm", "S1 Nm") makes it a value.
+_UNITS = r"(?:(?:nm|n\W?m|kg|mm|cm|km|bar|psi|rpm|hz|ah|kwh|wh|kw|kv|ma|v|w)(?![a-z])|[\u00b0%])"
+_NO_UNIT = rf"(?![.,]?\d)(?!\s*{_UNITS})"  # after a reference number: no digit, no unit
+_SEP = r"\s*(?:[-\u2010-\u2015\u2212,]|to|tot|en|et|and)\s*"  # "63-64", "63, 64", "63 en 64"
+_SOURCE_REF_RE = re.compile(rf"\((S\d{{1,2}})\)|\b(S\d{{1,2}})\b(?!\s*(?:\d|{_UNITS}))", re.I)
+_PAGE_RE = re.compile(
+    r"\b(?:pp?\.|pages?|pag\.|pagina(?:['\u2019]?s)?|blz\.|bladzijde)\s*(\d+)"
+    rf"(?:{_SEP}(\d+))?+{_NO_UNIT}",
+    re.I,
 )
-
-# A number directly followed by one of these units must be in the body of a cited section.
-# Longer units come first. Letter units need a non-letter after them ("3 mm" is not "3 m").
-# Text is lower case and without accents when this is used (see `numbers_with_unit`).
-_LETTER_UNITS = (
-    r"newton\s*(?:metre|meter)s?|millimet(?:re|er)s?|amperes?|volts?|degrees?|degres?|graden"
-    r"|percent|procent|pour\s*cent"
-    r"|n[\s\u00b7]?m|kwh|kv|kw|wh|ah|ma|mm|cm|km|kg|bar|psi|rpm|hz|v|a|w|m|g"
+_SECTION_RE = re.compile(
+    r"\b(section|sectie|paragraaf|paragraphe|hoofdstuk|chapter|chapitre|see|zie|voir)"
+    rf"\s*(\d+(?:\.\d+)+){_NO_UNIT}",
+    re.I,
 )
-_UNIT = rf"(?:(?:{_LETTER_UNITS})(?![a-z])|[\u00b0%])"
-# Words and signs between the two numbers of a range ("20-25", "20 to 25", "20/25").
-_RANGE_SEP = r"(?:\s*[-/\u2013\u2014]\s*|\s+(?:to|tot|a|et|en|and|or|of|ou)\s+)"
-_NUM = r"\d+(?:[.,]\d+)?"
-# One number or a range, then a unit. Not in the middle of a number ("4.5.3 mm" has no unit match).
-_UNIT_NUMBERS_RE = re.compile(rf"(?<!\d)(?<!\d[.,]){_NUM}(?:{_RANGE_SEP}{_NUM})*\s*{_UNIT}")
+_STEP_RE = re.compile(rf"\b(?:steps?|stap(?:pen)?|etapes?)\s*(\d+){_NO_UNIT}", re.I)
 
 
 @dataclass(frozen=True)
 class SourceText:
-    """One cited section: its text (`body`) and its number, heading path and pages (`label`)."""
+    """One cited section: text (`body`), number, heading path and pages (`label`), page range."""
 
     body: str
     label: str
+    page_start: int = 0
+    page_end: int = 0
 
     def full(self) -> str:
         """Label and body together, for the checks that do not care where the text comes from."""
@@ -222,22 +218,14 @@ def _number_key(written: str) -> Decimal | str:
     return Decimal(plain).normalize()
 
 
+def _unhide(text: str) -> str:
+    """NFKD form of a text without hidden characters (accents, zero-width marks, fillers)."""
+    return "".join(c for c in unicodedata.normalize("NFKD", text) if not _is_hidden(c))
+
+
 def numbers_in(text: str) -> set[Decimal | str]:
     """All numbers in a text, as `_number_key` values; hidden characters are dropped first."""
-    plain = "".join(c for c in unicodedata.normalize("NFKD", text) if not _is_hidden(c))
-    return {_number_key(m) for m in _NUMBER_RE.findall(plain)}
-
-
-def numbers_with_unit(text: str) -> set[Decimal | str]:
-    """The numbers in a text that have a unit (25 Nm, 4.5 kg); both numbers of a range count.
-
-    Case and accents are ignored. "Nm", "N m" and "N\u00b7m" are the same unit.
-    """
-    plain = "".join(c for c in unicodedata.normalize("NFKD", text) if not _is_hidden(c))
-    found: set[Decimal | str] = set()
-    for match in _UNIT_NUMBERS_RE.finditer(plain.casefold()):
-        found |= {_number_key(n) for n in _NUMBER_RE.findall(match.group(0))}
-    return found
+    return {_number_key(m) for m in _NUMBER_RE.findall(_unhide(text))}
 
 
 def _has_part_number(part_number: str, source_text: str) -> bool:
@@ -255,57 +243,70 @@ def _has_part_number(part_number: str, source_text: str) -> bool:
     return re.search(pattern, source_text.casefold()) is not None
 
 
+def _full(cited: list[SourceText]) -> str:
+    """Label and body of all cited sections as one text (a part number never spans a line)."""
+    return "\n".join(s.full() for s in cited)
+
+
 def _codes_in(text: str) -> list[str]:
     """Tokens that start with letters and hold a digit (AB-471, M8)."""
     tokens = (token.rstrip("-/") for token in _CODE_RE.findall(text))
     return [token for token in tokens if any(char.isdigit() for char in token)]
 
 
-def _strip_refs(text: str, sent_ids: set[str]) -> str:
-    """Remove references to sent sources (S1, (S2)) so they never count as numbers.
+def _strip_refs(text: str, sent_ids: set[str], cited: list[SourceText], step_count: int) -> str:
+    """Remove the valid references from a text so they never count as numbers.
 
-    "S45" is not removed when only S1 and S2 were sent, and neither is "S1" in "S1 Nm".
+    Valid: a sent source id (S1); a page (p. 63) in the page range of a cited section; a section
+    (section 4.5.3, "see" needs two dots) in a cited label or body; a step from 1 to the number
+    of steps. An invalid reference, or one followed by a unit ("p. 63 Nm"), stays in the text.
     """
 
-    def drop(match: re.Match[str]) -> str:
-        reference = match.group(1) or match.group(2)
-        return " " if reference in sent_ids else match.group(0)
+    def source(m: re.Match[str]) -> str:
+        return " " if (m[1] or m[2]) in sent_ids else m[0]
 
-    return _SOURCE_REF_RE.sub(drop, text)
+    def page(m: re.Match[str]) -> str:
+        pages = [int(n) for n in m.groups() if n]
+        in_range = all(any(s.page_start <= n <= s.page_end for s in cited) for n in pages)
+        return " " if in_range else m[0]
 
+    def section(m: re.Match[str]) -> str:
+        dots_needed = 2 if m[1].lower() in ("see", "zie", "voir") else 1
+        valid = m[2].count(".") >= dots_needed and _has_part_number(m[2], _full(cited))
+        return " " if valid else m[0]
 
-def _join(parts: list[SourceText]) -> SourceText:
-    """Several sections as one: all bodies together and all labels together."""
-    return SourceText("\n".join(p.body for p in parts), "\n".join(p.label for p in parts))
+    def step(m: re.Match[str]) -> str:
+        return " " if 1 <= int(m[1]) <= step_count else m[0]
+
+    for pattern, check in [(_SOURCE_REF_RE, source), (_PAGE_RE, page), (_SECTION_RE, section)]:
+        text = pattern.sub(check, text)
+    return _STEP_RE.sub(step, text)
 
 
 def check_answer(answer: AnswerDraft, sources: dict[str, SourceText]) -> list[str]:
     """Check a draft against the sent sections; returns the flags raised, empty when fine.
 
-    `sources` maps "S1" to the body and the label (section number, heading path, pages) of the
-    section. A number with a unit must be in a body; a bare number may be in a body or a label.
+    `sources` maps "S1" to a section. Every number must be in the body of a cited section (for
+    missing_information: of any sent section); the label only proves a reference like "p. 63".
     Flags: unknown_source, number_not_in_source, part_number_not_in_source, unsafe_words,
     wiring_words.
     """
     flags: set[str] = set()
     texts: list[str] = []  # all generated text, for the word checks
 
-    def cited_text(ids: list[str]) -> SourceText:
-        """Join the cited sections; flag ids that were not sent."""
+    def cited_text(ids: list[str]) -> list[SourceText]:
+        """The cited sections that were sent; flag ids that were not."""
         known = [sources[i] for i in ids if i in sources]
         if len(known) != len(ids):
             flags.add("unknown_source")
-        return _join(known)
+        return known
 
-    def check_values(text: str, source: SourceText) -> None:
-        """Flag numbers and codes (AB-471, M8) in generated text that the source lacks."""
-        plain = _strip_refs(text, set(sources))
-        body_numbers = numbers_in(source.body)
-        if not numbers_with_unit(plain) <= body_numbers:
+    def check_values(text: str, cited: list[SourceText]) -> None:
+        """Flag numbers and codes (AB-471, M8) in generated text that the sources lack."""
+        plain = _strip_refs(_unhide(text), set(sources), cited, len(answer.steps))
+        if not numbers_in(plain) <= {n for s in cited for n in numbers_in(s.body)}:
             flags.add("number_not_in_source")
-        if not numbers_in(plain) <= body_numbers | numbers_in(source.label):
-            flags.add("number_not_in_source")
-        if not all(_has_part_number(code, source.full()) for code in _codes_in(plain)):
+        if not all(_has_part_number(code, _full(cited)) for code in _codes_in(plain)):
             flags.add("part_number_not_in_source")
 
     items: list[StepDraft | WarningDraft] = [*answer.steps, *answer.warnings]
@@ -314,18 +315,17 @@ def check_answer(answer: AnswerDraft, sources: dict[str, SourceText]) -> list[st
         check_values(item.text, cited_text(item.sources))
 
     for part in answer.parts:
-        source_text = cited_text([part.source])
+        cited = cited_text([part.source])
         texts.append(part.name)
-        check_values(part.name, source_text)
+        check_values(part.name, cited)
         if part.part_number:
             texts.append(part.part_number)
-            if not _has_part_number(part.part_number, source_text.full()):
+            if not _has_part_number(part.part_number, _full(cited)):
                 flags.add("part_number_not_in_source")
 
-    all_sources = _join(list(sources.values()))
     for note in answer.missing_information:
         texts.append(note)
-        check_values(note, all_sources)
+        check_values(note, list(sources.values()))
 
     for text in texts:
         if question_level(text) != "normal" or is_bypass(text):

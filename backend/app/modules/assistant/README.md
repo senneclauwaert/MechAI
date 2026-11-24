@@ -32,7 +32,7 @@ below), `KNOWLEDGE_NOTHING_EMBEDDED` (409, after the trace is saved), `CORE_VALI
 | `not_in_handbook` | Best similarity below `REFUSAL_THRESHOLD`, or the AI found no steps. The 3 closest sources are shown |
 | `retrieval_only` | Pages only: AI off, AI down, answer invalid, wiring question, embedding down, handbook text not allowed out, or a check failed (unknown source, number or part number not in the cited section, wiring words in the generated text) |
 | `high_voltage` | High-voltage question (code, AI flag or a failed translation), unsafe words in the generated text, or the daily cap reached: pages only, no steps. At the cap the question is not sent to the AI at all: a keyword search finds the pages (status 200, reason `ASSISTANT_DAILY_LIMIT`, trace saved without a model, logged as a warning) |
-| `emergency` | Smoke, fire, swollen or hot battery, electric shock, injury: no answer and no search, no sources. A question the word lists catch makes no AI call at all; one that is only found after the translate call (English check or AI flag) has made that one call |
+| `emergency` | Smoke, fire, swollen or hot battery, burning smell, burns, electric shock, anyone hurt: no answer and no search, no sources. A question the word lists catch makes no AI call at all; one that is only found after the translate call (English check or AI flag) has made that one call |
 | `refused` | Bypass of a protection or opening a battery pack: no answer and no search, no sources. Same as emergency: no AI call when the word lists catch it, one translate call when the English check or the AI flag finds it |
 
 `reason_code` explains a fallback: `ASSISTANT_AI_DISABLED`, `ASSISTANT_AI_UNAVAILABLE`,
@@ -44,10 +44,11 @@ any AI call (hidden characters, punctuation inside a word and non-Latin look-ali
 hide a word); translate (1 call, which also returns `is_bypass` and `is_wiring`, both required);
 search through `knowledge.retrieve_sections`; answer (1 call, 1 retry on invalid output); then code
 checks the cleaned answer (sources exist, every number and every code like `AB-471` or `M8` is in
-the cited sections, no high-voltage, emergency, bypass or wiring words). A number with a unit
-(Nm, V, mm, kg, %, degrees, ...; both numbers of "20-25 Nm") must be in the text of a cited section;
-a section number or page in its heading line does not count for it. A bare number may come from
-the text or the heading line. An empty translation counts as a failed one. If a check fails, all
+the cited sections, no high-voltage, emergency, bypass or wiring words). Every number must be in
+the text of a cited section (both numbers of "20-25 Nm"); the heading line never proves a number.
+Only clear references are taken out first: a source id (S1), a page ("p. 63", inside the page range
+of a cited section), a section ("section 4.5.3", found in the heading line or the text), a step
+("step 2", up to the number of steps). A reference followed by a unit ("p. 63 Nm") is a value. An empty translation counts as a failed one. If a check fails, all
 steps are dropped. The stricter safety level always wins, and a bypass flag from the AI is refused like a
 bypass word (unless the level is emergency). The prompts are versioned files in `backend/prompts/`.
 
@@ -79,8 +80,8 @@ The worst case of one request is about 80 s (translate, embedding, answer and re
 - Word lists have no typo tolerance yet. A prefix like `accu*` or `laad*` can catch harmless words;
   the whole words that are known to be harmless (accueil, gasregelaar, laadruimte, ...) are in the
   `[ignore]` list, the check is strict on purpose for the rest.
-- A short word like "a" or "of" between two numbers counts as a range sign, and "a" or "m" after a
-  number as a unit, so "4.5 and 63 mm" asks for 4.5 in the text too (strict on purpose).
+- Strict on purpose: a section number without "section" or a page without "p." must be in the text
+  of the cited section, and "steps 2 and 3" only takes out the 2.
 - Slow answers: up to three AI calls plus the embedding inside one request.
 
 ## Error and reason texts

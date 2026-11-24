@@ -1225,3 +1225,54 @@ def test_a_part_number_null_does_not_drop_the_answer(handbook: Session, llm: Scr
 
     assert result.outcome == "answer"
     assert result.answer is not None and result.answer.parts[0].part_number is None
+
+
+def test_a_page_number_written_as_a_torque_drops_the_steps(
+    handbook: Session, llm: ScriptedLLM
+) -> None:
+    """The section is on pages 3-4: "3 N.m" is not in its text, so all steps are dropped."""
+    bad = {**ANSWER, "steps": [{"text": "Serrer a 3 N.m.", "sources": ["S1"]}]}
+    llm.replies = [ok(TRANSLATION), ok(bad)]
+
+    result = service.ask(handbook, QUESTION, None, "typed")
+
+    assert result.outcome == "retrieval_only" and result.answer is None
+    assert "number_not_in_source" in trace_of(handbook, result.trace_id).flags
+
+
+def test_a_page_reference_inside_the_page_range_is_not_a_number(
+    handbook: Session, llm: ScriptedLLM
+) -> None:
+    """ "p. 3" is on pages 3-4, so it is a reference; "p. 9" is outside and drops the steps."""
+    good = {**ANSWER, "steps": [{"text": "Tighten the nut, see p. 3 (S1).", "sources": ["S1"]}]}
+    bad = {**ANSWER, "steps": [{"text": "Tighten the nut, see p. 9 (S1).", "sources": ["S1"]}]}
+    llm.replies = [ok(TRANSLATION), ok(good)]
+    assert service.ask(handbook, QUESTION, None, "typed").outcome == "answer"
+    llm.replies = [ok(TRANSLATION), ok(bad)]
+    assert service.ask(handbook, QUESTION, None, "typed").outcome == "retrieval_only"
+
+
+# One person who is hurt per language: no AI call, also at the daily cap
+@pytest.mark.parametrize(
+    "question",
+    ["I burned my hand on the motor", "Mon collegue est blesse", "Mijn collega is verbrand"],
+)
+def test_a_hurt_person_is_an_emergency_without_any_ai_call_also_at_the_cap(
+    handbook: Session, llm: ScriptedLLM, searches: list[dict[str, Any]], question: str
+) -> None:
+    reach_the_cap(handbook)
+
+    result = service.ask(handbook, question, None, "typed")
+
+    assert result.outcome == "emergency" and result.answer is None
+    assert llm.chat_calls == [] and llm.embed_calls == 0 and searches == []
+
+
+def test_a_nul_inside_a_bypass_is_still_refused_without_any_ai_call(
+    handbook: Session, llm: ScriptedLLM, searches: list[dict[str, Any]]
+) -> None:
+    """The gate reads the question as typed: "bms" NUL "uit" is "bms uit"."""
+    result = service.ask(handbook, "bms\x00uit", None, "typed")
+
+    assert result.outcome == "refused"
+    assert llm.chat_calls == [] and llm.embed_calls == 0 and searches == []
