@@ -21,7 +21,8 @@ nl = [
   # "verbrand" alone also means burnt brake pads: only with a battery, motor, smoke or a person
   "verbrand+batterij", "verbrand+accu*", "verbrand+motor", "verbrand+rook", "verbrand+hand",
   "verbrand+handen", "verbrand+arm", "verbrand+vinger", "verbrand+vingers", "verbrand+gezicht",
-  "verbrand+been", "ik ben verbrand",
+  "verbrand+been", "ik ben verbrand", "me verbrand", "mij verbrand",
+  "zich verbrand", "brandwond",
 ]
 fr = [
   "fumee", "en feu", "odeur de brule", "chaude+batterie", "blesse",

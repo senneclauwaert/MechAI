@@ -55,7 +55,7 @@ NOTHING_EMBEDDED = "KNOWLEDGE_NOTHING_EMBEDDED"
 EXTERNAL_TEXT_OFF = "KNOWLEDGE_EXTERNAL_EMBEDDINGS_OFF"
 
 # The translate answer is a small JSON object; 600 tokens leave room for 20 keywords and 10 part
-# numbers (400 was too tight for long questions).
+# numbers.
 TRANSLATE_MAX_TOKENS = 600
 TRACE_QUESTION_CHARS = 500
 CLOSEST_SOURCES = 3  # sections shown when the answer is "not in the handbook"

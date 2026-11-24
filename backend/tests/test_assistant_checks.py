@@ -919,3 +919,11 @@ def test_search_terms_or_keywords_alone_are_enough() -> None:
     only_keywords = {**TRANSLATION_DATA, "search_terms_en": ""}
     assert Translation.model_validate(only_terms).search_terms_en == "rear axle bearing"
     assert Translation.model_validate(only_keywords).keywords_en == ["bearing"]
+
+
+# A person who is burned is an emergency (ADR-30), also without a body part in the text
+@pytest.mark.parametrize(
+    "text", ["ik heb me verbrand", "hij heeft zich verbrand", "brandwonden aan de arm"]
+)
+def test_a_burned_person_is_an_emergency(text: str) -> None:
+    assert question_level(text) == "emergency"
