@@ -1,3 +1,5 @@
+"""Settings: validation of the values read from the environment."""
+
 import pytest
 from pydantic import ValidationError
 

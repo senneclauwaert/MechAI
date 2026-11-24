@@ -24,6 +24,7 @@ from app.modules.knowledge import service as knowledge
 log = logging.getLogger("mechai.worker")
 
 
+# Test jobs, to try the queue by hand through the dev endpoints.
 def echo(db: Session, payload: dict[str, Any]) -> None:
     """A test job: it only writes its payload to the log."""
     log.info("echo job: %s", payload)
@@ -34,6 +35,7 @@ def fail(db: Session, payload: dict[str, Any]) -> None:
     raise AppError("CORE_TEST_FAILURE", "This test job always fails.")
 
 
+# Job type (the `type` column of core.jobs) -> function that runs it.
 HANDLERS: dict[str, Callable[[Session, dict[str, Any]], None]] = {
     "echo": echo,
     "fail": fail,
@@ -41,15 +43,19 @@ HANDLERS: dict[str, Callable[[Session, dict[str, Any]], None]] = {
     "ingest_document": knowledge.ingest_document_job,
 }
 
+# Shutdown: SIGTERM/SIGINT let the current job finish, then the loop stops.
 running = True
 
 
+# Signal handler: finish the current job, then leave the loop.
 def stop(*_: object) -> None:
     global running
     running = False
     log.info("stopping after the current job")
 
 
+# Runs in a thread next to a long job and keeps extending its lock, so another
+# worker does not think it crashed. Stops when the job ends or the claim is lost.
 def _heartbeat(job_id: object, claim_token: int, finished: Event) -> None:
     while not finished.wait(jobs.LOCK_TIME.total_seconds() / 3):
         try:
@@ -95,6 +101,7 @@ def run_one(db: Session) -> bool:
     return True
 
 
+# Main loop: run jobs until the queue is empty, then sleep for worker_poll_seconds.
 def main() -> None:
     setup_logging()
     signal.signal(signal.SIGTERM, stop)

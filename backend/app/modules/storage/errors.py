@@ -3,6 +3,7 @@
 from app.core.errors import AppError
 
 
+# The file was never saved, or was removed from the volume.
 def file_missing() -> AppError:
     return AppError("STORAGE_FILE_MISSING", "This file does not exist.", 404)
 

@@ -1,4 +1,7 @@
-"""All settings come from environment variables (or the .env file in the repo root)."""
+"""App settings, read from environment variables (or the .env file in the repo root).
+
+Every other file gets its settings through get_settings(), never from os.environ.
+"""
 
 from functools import lru_cache
 from pathlib import Path
@@ -12,9 +15,11 @@ from sqlalchemy.engine import URL
 ROOT_ENV = Path(__file__).resolve().parents[2] / ".env"
 
 
+# One field per environment variable (the name in upper case, e.g. CHUNK_TOKENS).
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=(ROOT_ENV, ".env"), extra="ignore")
 
+    # dev turns on the dev-only endpoints; prod hides them.
     environment: Literal["dev", "prod"] = "dev"
 
     # Database. Inside Docker the host is "db"; on your laptop it is "localhost".
@@ -52,9 +57,11 @@ class Settings(BaseSettings):
     worker_poll_seconds: float = 5.0
     job_max_attempts: int = 3
 
+    # Switches for later issues: login mode and the Supercube API client.
     auth_mode: str = "dev"  # dev or pin
     supercube_client: str = "fake"  # fake or real
 
+    # Validators: fix up or reject values after they are read.
     @field_validator("docling_models_dir")
     @classmethod
     def empty_models_dir_uses_baked_models(cls, value: str) -> str:
@@ -62,11 +69,13 @@ class Settings(BaseSettings):
         return value or "/opt/docling-models"
 
     @model_validator(mode="after")
+    # The overlap between two chunks must be smaller than a chunk, or chunking never moves on.
     def validate_chunk_overlap(self) -> "Settings":
         if self.chunk_overlap_tokens >= self.chunk_tokens:
             raise ValueError("chunk_overlap_tokens must be strictly less than chunk_tokens")
         return self
 
+    # The SQLAlchemy connection string: DATABASE_URL if set, else built from the parts.
     @property
     def db_url(self) -> str:
         if self.database_url:
@@ -83,6 +92,7 @@ class Settings(BaseSettings):
         return url.render_as_string(hide_password=False)
 
 
+# Read the settings once and reuse the same object; tests patch fields on it.
 @lru_cache
 def get_settings() -> Settings:
     return Settings()  # type: ignore[call-arg]  # postgres_password comes from .env

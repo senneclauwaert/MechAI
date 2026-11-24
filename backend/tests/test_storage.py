@@ -1,3 +1,5 @@
+"""Storage: saving and reading files, and refusing paths outside the files folder."""
+
 import pytest
 
 from app.config import get_settings
@@ -5,6 +7,7 @@ from app.core.errors import AppError
 from app.modules.storage import service
 
 
+# Every test writes into its own temporary folder.
 @pytest.fixture(autouse=True)
 def files_dir(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(get_settings(), "files_dir", str(tmp_path))

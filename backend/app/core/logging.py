@@ -7,10 +7,13 @@ from contextvars import ContextVar
 
 from fastapi import FastAPI, Request
 
+# The id of the request being handled, so every log line of that request carries it.
 request_id_var: ContextVar[str | None] = ContextVar("request_id", default=None)
 
 
+# One JSON object per log line: easy to search and to read by log tools.
 class JsonFormatter(logging.Formatter):
+    # Turn one log record into a JSON line, with the stack trace when there is one.
     def format(self, record: logging.LogRecord) -> str:
         line = {
             "time": self.formatTime(record),
@@ -24,6 +27,7 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(line)
 
 
+# Send all logs (ours and the libraries') to stdout as JSON, level INFO.
 def setup_logging() -> None:
     handler = logging.StreamHandler()
     handler.setFormatter(JsonFormatter())
@@ -32,6 +36,7 @@ def setup_logging() -> None:
     root.setLevel(logging.INFO)
 
 
+# Give every request a short id, put it in the logs and in the X-Request-ID header.
 def add_request_id_middleware(app: FastAPI) -> None:
     @app.middleware("http")
     async def request_id(request: Request, call_next):  # type: ignore[no-untyped-def]

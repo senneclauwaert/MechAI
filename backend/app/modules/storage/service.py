@@ -27,6 +27,7 @@ def save_file(folder: str, name: str, data: bytes) -> str:
     return relative_path
 
 
+# Read a file back; raises STORAGE_FILE_MISSING when it is not there.
 def open_file(relative_path: str) -> bytes:
     full = _full_path(relative_path)
     if not full.is_file():

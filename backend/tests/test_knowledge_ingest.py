@@ -1,3 +1,9 @@
+"""Handbook ingestion: tables, section building, chunking, safety tags, embeddings,
+the ingest job, and the upload and status endpoints.
+
+Docling and pypdfium2 are replaced by fakes where possible, so most tests need no real PDF.
+"""
+
 import hashlib
 import sys
 import uuid
@@ -26,6 +32,7 @@ REAL_RENDER = service.render_page_png  # the fixtures below replace it
 REAL_COUNT_PAGES = service.count_pdf_pages
 
 
+# --- tables and constraints ---
 def _document(file_hash: str | None = None) -> Document:
     return Document(title="Test manual", file_hash=file_hash)
 
@@ -59,6 +66,7 @@ def test_get_job_returns_job_or_none(db: Session) -> None:
     assert get_job(db, uuid.uuid4()) is None
 
 
+# --- sections: grouping under numbered headings ---
 def _items() -> list[ParsedItem]:
     return [
         ParsedItem("text", "Intro text.", 1),
@@ -102,6 +110,7 @@ def test_section_without_text_is_dropped() -> None:
     assert [s.heading_path for s in service.build_sections(items, "Manual")] == ["2 Full"]
 
 
+# --- splitting long sections and chunking ---
 def test_long_section_is_split_into_parts() -> None:
     section = SectionDraft("1", "1 Big", 3, 4, "\n\n".join(["word " * 30] * 4))
     parts = service.split_long_sections([section], max_tokens=100)
@@ -139,6 +148,7 @@ def test_very_long_paragraph_is_cut_by_words_with_overlap() -> None:
     assert chunks[0].split()[-1] in chunks[1].split()
 
 
+# --- high-voltage safety tag ---
 def test_safety_level_uses_whole_words() -> None:
     assert service.safety_level_for("Disconnect the battery") == "high_voltage"
     assert service.safety_level_for("Check the High-Voltage cable") == "high_voltage"
@@ -197,6 +207,7 @@ def test_split_parts_keep_the_level_of_the_whole_section() -> None:
     assert all(p.safety_level == "high_voltage" for p in parts)
 
 
+# --- context header of a chunk ---
 def test_context_header() -> None:
     one = SectionDraft("1", "1 Axle", 5, 5, "x")
     many = SectionDraft("1", "1 Axle", 5, 7, "x")
@@ -204,6 +215,7 @@ def test_context_header() -> None:
     assert service.context_header("Manual", many) == "Manual > 1 Axle (p. 5-7)"
 
 
+# --- embeddings: reuse, batching and the external-embeddings guard ---
 def _chunk(text: str, section_id: uuid.UUID | None = None) -> Chunk:
     return Chunk(
         section_id=section_id,
@@ -324,6 +336,7 @@ def test_playground_job_is_stopped_for_a_real_client_when_embeddings_are_off(
     assert llm.embed_calls == 0
 
 
+# --- page image size ---
 def test_render_scale_of_a_normal_page_follows_the_dpi() -> None:
     assert service.render_scale(595, 842, 150) == pytest.approx(150 / 72)  # A4 in points
 
@@ -752,6 +765,7 @@ def test_status_of_unknown_document_is_404(client: TestClient) -> None:
     assert response.json()["error"]["code"] == "CORE_NOT_FOUND"
 
 
+# --- regressions: page bounds, atomic job queuing, stale job pointer ---
 def test_section_bounds_include_heading_page() -> None:
     (section,) = service.build_sections(
         [

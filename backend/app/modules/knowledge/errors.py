@@ -3,6 +3,7 @@
 from app.core.errors import AppError
 
 
+# Upload and ingestion of handbook PDFs.
 def document_not_found() -> AppError:
     return AppError("KNOWLEDGE_DOCUMENT_NOT_FOUND", "This document does not exist.", 404)
 
@@ -19,6 +20,7 @@ def file_too_large(max_mb: int) -> AppError:
     return AppError("KNOWLEDGE_FILE_TOO_LARGE", f"The file is larger than {max_mb} MB.", 413)
 
 
+# Access checks (dev only until the admin check of #26).
 def upload_not_allowed() -> AppError:
     return AppError("KNOWLEDGE_UPLOAD_NOT_ALLOWED", "You are not allowed to upload documents.", 403)
 
@@ -41,6 +43,7 @@ def external_embeddings_off() -> AppError:
     )
 
 
+# Playground and search.
 def playground_not_allowed() -> AppError:
     return AppError(
         "KNOWLEDGE_PLAYGROUND_NOT_ALLOWED", "You are not allowed to use the playground.", 403

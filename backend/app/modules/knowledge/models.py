@@ -13,6 +13,8 @@ from app.core.database import Base
 EMBED_DIMENSIONS = 1024  # mistral-embed
 
 
+# An uploaded source: a handbook PDF, or the playground. file_hash stops the same
+# PDF from being ingested twice; job_id points to its last ingestion job.
 class Document(Base):
     __tablename__ = "documents"
     __table_args__ = {"schema": "knowledge"}
@@ -31,6 +33,7 @@ class Document(Base):
     )
 
 
+# One page of a document: its text and the path of its PNG image (for citations).
 class Page(Base):
     __tablename__ = "pages"
     __table_args__ = (
@@ -47,6 +50,8 @@ class Page(Base):
     kind: Mapped[str] = mapped_column(String(20), default="text")
 
 
+# A numbered section of the handbook (e.g. "5.3.1 Bearings") with its full heading
+# path, page range and safety level. Long sections are stored in parts.
 class Section(Base):
     __tablename__ = "sections"
     __table_args__ = {"schema": "knowledge"}
@@ -63,6 +68,9 @@ class Section(Base):
     safety_level: Mapped[str] = mapped_column(String(20), default="normal")
 
 
+# A piece of a section that is searched: its text (with a context header), the
+# embedding for vector search and a tsvector for full-text search.
+# Indexes: HNSW for cosine search, GIN for full-text, and hash+model to reuse embeddings.
 class Chunk(Base):
     __tablename__ = "chunks"
     __table_args__ = (

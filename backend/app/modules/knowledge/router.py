@@ -20,6 +20,7 @@ from app.modules.knowledge.schemas import (
 router = APIRouter(tags=["knowledge"])
 
 
+# Playground: try embeddings and search with your own text.
 @router.post("/playground", status_code=201)
 def add_text(body: PlaygroundTextIn, db: DB) -> PlaygroundTextOut:
     """Add a test text. The worker embeds it in the background."""
@@ -27,12 +28,14 @@ def add_text(body: PlaygroundTextIn, db: DB) -> PlaygroundTextOut:
     return PlaygroundTextOut(chunk_id=str(chunk.id), job_id=str(job_id))
 
 
+# Hybrid search over all embedded chunks, best matches first.
 @router.get("/search")
 def search(db: DB, q: Annotated[str, Query(min_length=2, max_length=500)]) -> SearchOut:
     hits = service.search(db, q)
     return SearchOut(question=q, hits=[SearchHit(**h) for h in hits])
 
 
+# Handbook upload. 201 for a new document, 200 when the same file was uploaded before.
 @router.post("/documents", status_code=201)
 def upload_document(
     file: UploadFile,
@@ -57,6 +60,7 @@ def upload_document(
     )
 
 
+# Ingestion progress of one document, for polling after an upload.
 @router.get("/documents/{document_id}/status")
 def document_status(document_id: uuid.UUID, db: DB) -> DocumentStatusOut:
     return DocumentStatusOut(**service.document_status(db, document_id))

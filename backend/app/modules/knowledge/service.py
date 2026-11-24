@@ -1,7 +1,10 @@
 """The logic of the knowledge module. Other modules call these functions, never the tables.
 
-For now this is a playground to try RAG: add a text, the worker embeds it, then search.
-The real ingestion (PDF -> pages -> sections -> chunks) comes in its own issue.
+It covers:
+- handbook ingestion: PDF -> pages (text + PNG) -> sections -> chunks -> embeddings,
+  run by the worker after an upload;
+- the playground: add a text, the worker embeds it;
+- hybrid search (vector + full-text, merged with RRF) over the chunks.
 """
 
 import hashlib
@@ -27,11 +30,13 @@ from app.modules.storage import service as storage
 
 log = logging.getLogger("mechai.knowledge")
 
+# Tuning constants
 PLAYGROUND_TITLE = "Playground"
 RRF_K = 60  # standard value for Reciprocal Rank Fusion
 EMBED_BATCH = 64  # texts per embedding call
 MAX_PAGE_PIXELS = 6000  # longest side of a page image
 
+# Patterns used while building sections
 # "5.3.1 Bearings" -> number "5.3.1", title "Bearings"
 SECTION_HEADING = re.compile(r"^(\d+(?:\.\d+)*)\.?\s+(\S.*)$")
 
@@ -73,6 +78,7 @@ HIGH_VOLTAGE_PATTERN = re.compile(
 )
 
 
+# In-memory shapes used between parsing and saving
 @dataclass(frozen=True)
 class ParsedItem:
     """One piece of the handbook as the parser found it."""
@@ -94,15 +100,19 @@ class SectionDraft:
     safety_level: str = "normal"  # of the whole section, so every part of a split gets the same
 
 
+# Small text helpers
 def approx_tokens(text: str) -> int:
     """A cheap token estimate: about 4 tokens for every 3 words."""
     return round(len(text.split()) * 4 / 3)
 
 
+# SHA-256 of a chunk text; the same text gets the same hash, so its embedding can be reused.
 def content_hash(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
+# Sections: group the parsed items under their numbered headings, then split
+# sections that are too long.
 def _parent_numbers(number: str) -> list[str]:
     """Parents from the top: "5.3.1" gives ["5", "5.3"]."""
     parts = number.split(".")
@@ -168,10 +178,13 @@ def split_long_sections(sections: list[SectionDraft], max_tokens: int) -> list[S
     return result
 
 
+# "high_voltage" when the text mentions any high-voltage word, else "normal".
 def safety_level_for(text: str) -> str:
     return "high_voltage" if HIGH_VOLTAGE_PATTERN.search(text) else "normal"
 
 
+# First line of every chunk: document > heading path (pages). Gives the model and
+# the search the context of a piece that is read on its own.
 def context_header(document_title: str, section: SectionDraft) -> str:
     if section.page_start == section.page_end:
         pages = f"p. {section.page_start}"
@@ -180,6 +193,8 @@ def context_header(document_title: str, section: SectionDraft) -> str:
     return f"{document_title} > {section.heading_path} ({pages})"
 
 
+# Chunking: pack paragraphs into chunks of about chunk_tokens, with a small overlap
+# between chunks. Tables are never cut; a paragraph that is too long is cut by words.
 def _is_table(paragraph: str) -> bool:
     return any(line.startswith("|") for line in paragraph.split("\n"))
 
@@ -212,6 +227,7 @@ def make_chunks(text: str, chunk_tokens: int, overlap_tokens: int) -> list[str]:
     current: list[str] = []  # paragraphs of the chunk being built
     last_paragraph = ""  # the last real paragraph of the previous chunk
 
+    # Close the chunk being built and start a new one.
     def flush() -> None:
         if current:
             chunks.append("\n\n".join(current))
@@ -240,6 +256,7 @@ def make_chunks(text: str, chunk_tokens: int, overlap_tokens: int) -> list[str]:
     return chunks
 
 
+# Embeddings
 def _check_external_embeddings(llm: LLMClient) -> None:
     """A real AI client only gets text when both settings allow it; the fake client always may."""
     settings = get_settings()
@@ -285,6 +302,7 @@ def embed_chunks(db: Session, chunks: list[Chunk]) -> int:
     return len(to_send)
 
 
+# Playground: all test texts live in one "Playground" document.
 def _playground(db: Session) -> Document:
     doc = db.scalars(select(Document).where(Document.title == PLAYGROUND_TITLE)).first()
     if doc is None:
@@ -323,6 +341,7 @@ def embed_text_job(db: Session, payload: dict[str, Any]) -> None:
     db.commit()
 
 
+# PDF reading. Only the worker calls these: the api never opens a PDF.
 def parse_pdf(data: bytes) -> tuple[list[ParsedItem], dict[int, str]]:
     """Read a PDF with Docling. Returns the items in reading order and the text of every page."""
     # Imported here so the api and the tests start fast (the same pattern as llm.py)
@@ -411,6 +430,8 @@ def count_pdf_pages(data: bytes) -> int:
         pdf.close()
 
 
+# Ingestion job: everything for one document happens in one transaction, so a
+# failed run leaves the previous data in place and a retry starts clean.
 def ingest_document_job(db: Session, payload: dict[str, Any]) -> None:
     """Worker job: PDF -> pages (text + PNG) -> sections -> chunks -> embeddings. One commit."""
     settings = get_settings()
@@ -425,6 +446,7 @@ def ingest_document_job(db: Session, payload: dict[str, Any]) -> None:
         raise errors.too_many_pages(settings.max_pdf_pages)
     items, page_texts = parse_pdf(data)
 
+    # Build the sections and their chunks in memory; nothing is saved yet.
     drafts = split_long_sections(build_sections(items, document.title), settings.section_max_tokens)
     sections: list[Section] = []
     chunks: list[Chunk] = []
@@ -481,10 +503,12 @@ def ingest_document_job(db: Session, payload: dict[str, Any]) -> None:
     )
 
 
+# Upload helpers
 def _find_by_hash(db: Session, file_hash: str) -> Document | None:
     return db.scalars(select(Document).where(Document.file_hash == file_hash)).first()
 
 
+# Queue an ingestion job and link it to the document, in one commit.
 def _queue_ingest(db: Session, document: Document) -> Job:
     job = jobs.enqueue(db, "ingest_document", {"document_id": str(document.id)}, commit=False)
     document.job_id = job.id
@@ -507,6 +531,7 @@ def _require_dev_until_auth(error: AppError) -> None:
         raise error
 
 
+# Upload: check the file, skip duplicates, save the PDF and queue the ingestion.
 def upload_document(
     db: Session, data: bytes, title: str, revision: str | None, kart_model: str | None
 ) -> tuple[Document, Job, bool]:
@@ -552,6 +577,7 @@ def upload_document(
     return document, _queue_ingest(db, document), False
 
 
+# Status: the state of the last ingestion job and how many rows it produced.
 def document_status(db: Session, document_id: uuid.UUID) -> dict[str, Any]:
     """Where the ingestion of a document stands, with the counts of what was saved."""
     _require_dev_until_auth(errors.status_not_allowed())
@@ -564,6 +590,7 @@ def document_status(db: Session, document_id: uuid.UUID) -> dict[str, Any]:
     if status == "failed" and job and job.last_error:
         error_code = job.last_error.split(":", 1)[0]  # the worker stores "CODE: message"
 
+    # Counts of what was saved for this document
     pages = db.scalar(select(func.count()).where(Page.document_id == document_id))
     sections = db.scalar(select(func.count()).where(Section.document_id == document_id))
     chunks = db.scalar(
@@ -584,6 +611,7 @@ def document_status(db: Session, document_id: uuid.UUID) -> dict[str, Any]:
     }
 
 
+# Search
 def search(db: Session, question: str, limit: int = 5) -> list[dict[str, Any]]:
     """Hybrid search: vector top 20 + full-text top 20, merged with RRF (vault: RAG pipeline)."""
     llm = get_llm()
@@ -592,6 +620,7 @@ def search(db: Session, question: str, limit: int = 5) -> list[dict[str, Any]]:
     if not has_embeddings:
         raise errors.nothing_embedded()
 
+    # 1. Vector search: the 20 chunks closest in meaning (cosine distance).
     query_vector = llm.embed([question])[0]
     by_vector = db.scalars(
         select(Chunk)
@@ -600,6 +629,7 @@ def search(db: Session, question: str, limit: int = 5) -> list[dict[str, Any]]:
         .limit(20)
     ).all()
 
+    # 2. Full-text search: the 20 chunks that best match the words of the question.
     ts_query = func.websearch_to_tsquery("english", question)
     by_text = db.scalars(
         select(Chunk)
@@ -608,10 +638,13 @@ def search(db: Session, question: str, limit: int = 5) -> list[dict[str, Any]]:
         .limit(20)
     ).all()
 
+    # 3. Merge both lists with Reciprocal Rank Fusion: a chunk scores higher the better it
+    # ranks in either list, and highest when it is in both.
     vector_rank = {c.id: i + 1 for i, c in enumerate(by_vector)}
     text_rank = {c.id: i + 1 for i, c in enumerate(by_text)}
     chunks = {c.id: c for c in [*by_vector, *by_text]}
 
+    # RRF score: the sum of 1 / (60 + rank) over the lists the chunk appears in.
     def rrf(chunk_id: uuid.UUID) -> float:
         score = 0.0
         for ranks in (vector_rank, text_rank):

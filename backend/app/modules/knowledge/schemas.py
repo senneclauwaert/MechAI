@@ -5,6 +5,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
+# Playground
 class PlaygroundTextIn(BaseModel):
     title: str = Field(min_length=1, max_length=300, examples=["Rear axle bearing"])
     text: str = Field(min_length=1, max_length=20_000)
@@ -15,6 +16,7 @@ class PlaygroundTextOut(BaseModel):
     job_id: str
 
 
+# Search: one hit with its rank in each search list and the merged RRF score.
 class SearchHit(BaseModel):
     chunk_id: str
     heading: str
@@ -29,6 +31,7 @@ class SearchOut(BaseModel):
     hits: list[SearchHit]
 
 
+# Handbook upload and ingestion status
 class DocumentOut(BaseModel):
     document_id: str
     job_id: str

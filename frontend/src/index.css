@@ -1,3 +1,4 @@
+/* Global styles of the skeleton page. Colours are CSS variables, set once in :root. */
 :root {
   --text: #1c2430;
   --muted: #5b6573;
@@ -27,6 +28,7 @@ a {
   color: var(--accent);
 }
 
+/* Health status card and its ok / error text colours */
 .status {
   padding: 16px;
   border-radius: 12px;

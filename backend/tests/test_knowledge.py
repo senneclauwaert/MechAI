@@ -1,3 +1,5 @@
+"""Knowledge playground: add a text, let the worker embed it, then search."""
+
 from fastapi.testclient import TestClient
 from sqlalchemy import delete
 from sqlalchemy.orm import Session

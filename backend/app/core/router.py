@@ -15,6 +15,7 @@ from app.core.models import Job
 router = APIRouter(tags=["core"])
 
 
+# Health check: also checks that the database answers.
 @router.get("/health")
 def health(db: DB) -> dict[str, str]:
     try:
@@ -24,11 +25,13 @@ def health(db: DB) -> dict[str, str]:
     return {"status": "ok", "database": "ok"}
 
 
+# Dev-only job endpoints: put a job in the queue and follow its status.
 class JobIn(BaseModel):
     type: str
     payload: dict[str, Any] = {}
 
 
+# What the dev job endpoints return about a job.
 class JobOut(BaseModel):
     id: str
     type: str
@@ -47,6 +50,7 @@ class JobOut(BaseModel):
         )
 
 
+# Dependency that hides an endpoint outside dev (answers 404 as if it does not exist).
 def _dev_only() -> None:
     if get_settings().environment != "dev":
         raise not_found("Page")
@@ -58,6 +62,7 @@ def add_test_job(body: JobIn, db: DB) -> JobOut:
     return JobOut.of(jobs.enqueue(db, body.type, body.payload))
 
 
+# Dev only: read the status, attempts and last error of a job.
 @router.get("/dev/jobs/{job_id}", dependencies=[Depends(_dev_only)])
 def get_test_job(job_id: str, db: DB) -> JobOut:
     job = db.get(Job, job_id)
