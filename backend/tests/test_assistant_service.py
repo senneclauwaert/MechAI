@@ -935,6 +935,16 @@ def test_a_raw_reply_is_cleaned_cut_and_never_logged(
     assert "SECRETREPLY" not in caplog.text
 
 
+def test_a_fire_report_in_dutch_is_an_emergency_at_the_cap_without_ai(
+    handbook: Session, llm: ScriptedLLM
+) -> None:
+    reach_the_cap(handbook)
+    result = service.ask(handbook, "De kabel brandt", None, "typed")
+    assert result.outcome == "emergency"
+    assert llm.chat_calls == []
+    assert llm.embed_calls == 0
+
+
 # Evidence without steps: one retry that asks for the steps
 FOUND_NOTHING_WRITTEN = {**ANSWER, "steps": [], "evidence": ["Tighten the new nut to 25 Nm."]}
 

@@ -1060,7 +1060,7 @@ def test_being_shocked_is_an_emergency(text: str) -> None:
     assert question_level(text) == "emergency"
 
 
-# "brandt" also means that a lamp is on: only with a fire object or "het brandt" is it an emergency
+# "brandt" is an emergency, except directly after a lamp word (then the lamp is on)
 @pytest.mark.parametrize(
     "text",
     [
@@ -1070,6 +1070,13 @@ def test_being_shocked_is_an_emergency(text: str) -> None:
         "de accu brandt",
         "de motor brandt",
         "mijn kart brandt",
+        "de kabel brandt",
+        "er brandt een kabel",
+        "Brandt er iets?",
+        "hij brandt",
+        "mijn arm brandt",
+        "de lader brandt",
+        "de lamp brandt en de kabel brandt",
         "de kart staat in brand",
         "er is brand",
     ],
@@ -1084,7 +1091,41 @@ def test_brandt_with_a_fire_is_an_emergency(text: str) -> None:
         "de groene lamp brandt",
         "Controleer of de groene indicator brandt.",
         "het waarschuwingslampje brandt",
+        "De groene drive switch indicator brandt",
+        "de led brandt",
     ],
 )
 def test_a_lamp_that_is_on_stays_normal(text: str) -> None:
     assert question_level(text) == "normal"
+
+
+# English ways to get around a safety device, as a question and as a generated step
+@pytest.mark.parametrize("device", ["emergency stop", "brake sensor", "seat sensor"])
+@pytest.mark.parametrize("verb", ["Bridge", "Bridging", "Override", "Overriding", "Jump", "Skip"])
+def test_english_ways_around_a_safety_device_are_a_bypass(verb: str, device: str) -> None:
+    text = f"{verb} the {device}."
+    assert is_bypass(text)
+    assert "unsafe_words" in step_flags(text, "")
+
+
+@pytest.mark.parametrize("device", ["emergency stop", "brake sensor", "seat sensor"])
+@pytest.mark.parametrize("verb", ["Reset", "Release", "Replace", "Check"])
+def test_normal_work_on_a_safety_device_is_not_a_bypass(verb: str, device: str) -> None:
+    assert not is_bypass(f"{verb} the {device}.")
+
+
+# A step reference may not eat the first digits of a value ("step 1.5 mm", "step 12 Nm")
+@pytest.mark.parametrize(
+    ("text", "body"), [("Use step 1.5 mm.", "5 mm"), ("Use step 12 Nm.", "2 Nm")]
+)
+def test_a_reference_never_takes_part_of_a_number(text: str, body: str) -> None:
+    draft = AnswerDraft.model_validate(
+        {
+            "steps": [{"text": text, "sources": ["S1"]}],
+            "parts": [],
+            "warnings": [],
+            "confidence": "high",
+            "missing_information": [],
+        }
+    )
+    assert "number_not_in_source" in check_answer(draft, {"S1": SourceText(body, "")})

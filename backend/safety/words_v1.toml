@@ -13,7 +13,7 @@
 nl = [
   "rook", "rookt", "brandgeur", "brandlucht", "in brand", "opgezwollen", "gezwollen",
   "warm+batterij", "heet+batterij", "hete+batterij", "hete+accu", "gewond",
-  "geelektrocuteerd", "explosie", "ontplof", "vlammen", "vuur",
+  "geelektrocuteerd", "explosie", "ontplof", "vlammen", "brandt", "vuur",
   "het brandt", "er brandt iets", "iets brandt", "staat te branden",
   "brandt+batterij", "brandt+accu*", "brandt+motor", "brandt+kart",
   "ruikt+verbrand",
@@ -103,6 +103,13 @@ fr = [
   "contourn+arret d'urgence", "contourn+capteur", "contourn+securite",
 ]
 en = [
+  "bridge+emergency stop", "bridge+brake sensor", "bridge+seat sensor",
+  "bridging+emergency stop", "bridging+brake sensor", "bridging+seat sensor",
+  "overrid+emergency stop", "overrid+brake sensor", "overrid+seat sensor",
+  "jump+emergency stop", "jump+brake sensor", "jump+seat sensor",
+  "jumping+emergency stop", "jumping+brake sensor", "jumping+seat sensor",
+  "skip+emergency stop", "skip+brake sensor", "skip+seat sensor",
+  "skipping+emergency stop", "skipping+brake sensor", "skipping+seat sensor",
   "defeat+safety", "open+battery pack", "disable+bms",
   "override+seat switch", "override+safety", "disabling+bms", "open+battery", "opening+battery",
   "emergency stop+uitschakel",
@@ -169,6 +176,9 @@ en = [
 # Whole words that look like a safety word but are not (blanked out before matching).
 [ignore]
 nl = [
+  # a lamp that is on, not a fire
+  "lamp brandt", "lampje brandt", "controlelamp brandt", "controlelampje brandt",
+  "waarschuwingslamp brandt", "waarschuwingslampje brandt", "led brandt", "indicator brandt",
   "accuraat", "gasregelaar", "gasregelaars", "laadruimte", "laadruimtes",
   "schokbreker", "schokbrekers", "schokdemper", "schokdempers",
 ]
