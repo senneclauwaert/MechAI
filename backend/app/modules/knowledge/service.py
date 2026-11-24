@@ -11,7 +11,9 @@ It covers:
 import hashlib
 import io
 import logging
+import math
 import re
+import unicodedata
 import uuid
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -625,11 +627,15 @@ def _vector_hits(
     """The 20 chunks closest in meaning, as (chunk, cosine distance), closest first.
 
     `base` is a select of Chunk that already holds the filters. The rows are sorted again here
-    because an HNSW scan in relaxed order may return them slightly out of order.
+    because an HNSW scan in relaxed order may return them slightly out of order. A distance that
+    is not a number (a zero vector has none) means "no score": that chunk is not a vector hit.
     """
     distance = Chunk.embedding.cosine_distance(query_vector)
     rows = db.execute(base.add_columns(distance).order_by(distance).limit(20)).all()
-    return sorted(((chunk, float(dist)) for chunk, dist in rows), key=lambda row: row[1])
+    hits = [(chunk, float(dist)) for chunk, dist in rows if dist is not None]
+    return sorted(
+        ((chunk, dist) for chunk, dist in hits if math.isfinite(dist)), key=lambda r: r[1]
+    )
 
 
 def _text_hits(
@@ -739,7 +745,7 @@ class Retrieval:
 
     chunks: list[RetrievedChunk]  # the best 20 chunks, best first
     sections: list[RetrievedSection]  # the sections for the answer step, best first
-    best_similarity: float | None  # highest cosine similarity of the vector hits, or None
+    best_similarity: float | None  # highest similarity among the returned sections, or None
     embedding_error: str | None  # error code when the query could not be embedded
 
 
@@ -758,12 +764,13 @@ def _handbook_chunks() -> Select[Any]:
     )
 
 
-def _text_search_input(keywords: list[str], query: str) -> str:
-    """Words for websearch_to_tsquery, joined with "or" because that function ANDs its words.
+def _clean(text: str) -> str:
+    """Replace NUL and every other control character (Unicode category Cc) by a space."""
+    return "".join(" " if unicodedata.category(char) == "Cc" else char for char in text)
 
-    Only letters, digits and underscores survive, so quotes and hyphens cannot change the query.
-    """
-    source = " ".join(keywords) if keywords else query
+
+def _search_words(source: str) -> list[str]:
+    """The distinct words of a text (letters, digits, underscores), without the word "or"."""
     words: list[str] = []
     seen: set[str] = set()
     for word in re.findall(r"\w+", source):
@@ -771,6 +778,16 @@ def _text_search_input(keywords: list[str], query: str) -> str:
         if key != "or" and key not in seen:
             seen.add(key)
             words.append(word)
+    return words
+
+
+def _text_search_input(keywords: list[str], query: str) -> str:
+    """Words for websearch_to_tsquery, joined with "or" because that function ANDs its words.
+
+    Only letters, digits and underscores survive, so quotes and hyphens cannot change the query.
+    When the keywords hold no usable word, the words of the query are used instead.
+    """
+    words = _search_words(" ".join(keywords)) or _search_words(query)
     return " or ".join(words[:MAX_TEXT_WORDS])
 
 
@@ -827,15 +844,19 @@ def retrieve_sections(
 
     `query` is a full English sentence: the vector search and the similarity score use it.
     `keywords` and `part_numbers` feed the full-text search. When the query cannot be embedded,
-    the text hits are still returned and `embedding_error` holds the error code.
+    the text hits are still returned and `embedding_error` holds the error code. With AI off
+    (`AI_ENABLED=false`) there is no vector search and no client is created. NUL and other
+    control characters are removed from all inputs first, and search terms are never logged.
     """
+    query = _clean(query)
+    keywords = [_clean(keyword) for keyword in keywords]
     base = _handbook_chunks()
     if not db.scalar(select(func.count()).select_from(base.subquery())):
         raise errors.nothing_embedded()
 
     vector_hits: list[tuple[Chunk, float]] = []
     embedding_error: str | None = None
-    if use_embeddings:
+    if use_embeddings and get_settings().ai_enabled:
         llm = get_llm()  # only here: without embeddings no client is created
         active = base.where(
             Chunk.embedding_model == llm.embedding_model, Chunk.embedding.is_not(None)
@@ -851,7 +872,7 @@ def retrieve_sections(
             db.execute(sql_text("SET LOCAL hnsw.iterative_scan = relaxed_order"))
             vector_hits = _vector_hits(db, active, query_vector)
 
-    parts = [part.strip() for part in part_numbers]
+    parts = [_clean(part).strip() for part in part_numbers]
     parts = [p for p in parts if p and len(p) <= MAX_PART_NUMBER_CHARS][:MAX_PART_NUMBERS]
     text_hits = _text_hits(db, base, _text_search_input(keywords, query), parts)
 
@@ -862,6 +883,11 @@ def retrieve_sections(
     found = {c.id: c for c in [*(c for c, _ in vector_hits), *text_hits]}
     scores = {cid: _rrf_score(vector_rank.get(cid), text_rank.get(cid)) for cid in found}
     best = sorted(found, key=lambda cid: (-scores[cid], cid))[:20]
+    sections = _pick_sections(db, [found[cid].section_id for cid in best])
+
+    # The refusal score counts only chunks of the sections that are really returned
+    returned = {section.section_id for section in sections}
+    section_similarities = [similarity[c.id] for c, _ in vector_hits if c.section_id in returned]
 
     return Retrieval(
         chunks=[
@@ -875,7 +901,7 @@ def retrieve_sections(
             )
             for cid in best
         ],
-        sections=_pick_sections(db, [found[cid].section_id for cid in best]),
-        best_similarity=max(similarity.values()) if similarity else None,
+        sections=sections,
+        best_similarity=max(section_similarities, default=None),
         embedding_error=embedding_error,
     )

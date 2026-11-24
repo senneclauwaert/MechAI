@@ -22,7 +22,13 @@ hybrid search over the chunks.
   that would pass `ANSWER_SOURCE_TOKENS` is skipped (the first one is always kept). A section is
   never cut. It raises `KNOWLEDGE_NOTHING_EMBEDDED` when there is no handbook chunk (or none
   embedded with the current model). If the query embedding fails, the text hits are still returned
-  and `embedding_error` holds the code. With `use_embeddings=False` no AI client is created.
+  and `embedding_error` holds the code. With `use_embeddings=False`, or with `AI_ENABLED=false`,
+  no AI client is created and there is no vector search (text hits only).
+  `best_similarity` is the highest similarity among chunks of the sections that are really
+  returned. A similarity that is not a number (a zero vector) counts as no score (`None`), and
+  that chunk is not a vector hit. NUL and other control characters are replaced by a space in
+  the query, the keywords and the part numbers; when the keywords hold no usable word, the words
+  of the query are used. Search terms are never logged (the database engine hides parameters).
   The vector search needs pgvector 0.8.0 or newer (`hnsw.iterative_scan`); `compose.yaml` pins it.
 - `external_text_allowed(llm)`: true for the fake client, else only when `ALLOW_EXTERNAL_EMBEDDINGS`
   and `AI_ENABLED` are both `true`. Embedding uses it, and so does the assistant before it sends

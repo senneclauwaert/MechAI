@@ -23,12 +23,13 @@ def make_llm(response: Any = None, error: Exception | None = None) -> MistralLLM
     return llm
 
 
-# A provider response with one choice (content may be empty) and optional usage.
-def response(content: str | None, usage: Any = None, choices: bool = True) -> SimpleNamespace:
+# A provider response with one choice (content may be empty), optional usage and finish reason.
+def response(
+    content: str | None, usage: Any = None, choices: bool = True, finish: str = "stop"
+) -> SimpleNamespace:
     message = SimpleNamespace(content=content)
-    return SimpleNamespace(
-        choices=[SimpleNamespace(message=message)] if choices else [], usage=usage
-    )
+    choice = SimpleNamespace(message=message, finish_reason=finish)
+    return SimpleNamespace(choices=[choice] if choices else [], usage=usage)
 
 
 def test_fake_chat_json_has_all_keys() -> None:
@@ -64,6 +65,31 @@ def test_mistral_chat_returns_text_and_tokens() -> None:
 def test_mistral_chat_without_usage_gives_zero_tokens() -> None:
     result = make_llm(response("hello")).chat([])
     assert (result.tokens_in, result.tokens_out) == (0, 0)
+
+
+@pytest.mark.parametrize(
+    ("finish", "expected"), [("length", True), ("model_length", True), ("stop", False)]
+)
+def test_mistral_chat_marks_cut_off_answers(finish: str, expected: bool) -> None:
+    result = make_llm(response("half an ans", finish=finish)).chat([])
+    assert result.truncated is expected
+    assert result.text == "half an ans"  # no error is raised
+
+
+def test_fake_chat_is_never_truncated() -> None:
+    assert FakeLLM().chat([]).truncated is False
+    assert FakeLLM().chat([], json_output=True).truncated is False
+
+
+def test_mistral_embed_uses_the_timeout() -> None:
+    llm = make_llm()
+    llm.settings.embed_model = "e"  # type: ignore[attr-defined]
+    llm.client.embeddings.create.return_value = SimpleNamespace(  # type: ignore[attr-defined]
+        data=[SimpleNamespace(embedding=[0.5])]
+    )
+    assert llm.embed(["x"]) == [[0.5]]
+    kwargs = llm.client.embeddings.create.call_args.kwargs  # type: ignore[attr-defined]
+    assert kwargs["timeout_ms"] == 7000
 
 
 @pytest.mark.parametrize(

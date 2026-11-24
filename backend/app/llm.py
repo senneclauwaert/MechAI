@@ -16,12 +16,14 @@ from app.core.errors import AppError
 log = logging.getLogger("mechai.llm")
 
 
-# The result of one chat call: the answer text and the tokens used (for cost tracking).
+# The result of one chat call: the answer text, the tokens used (for cost tracking) and whether
+# the answer was cut off because it hit the token limit.
 @dataclass(frozen=True)
 class ChatResult:
     text: str
     tokens_in: int
     tokens_out: int
+    truncated: bool = False
 
 
 # The interface every AI client has: chat, embeddings and speech-to-text.
@@ -73,6 +75,7 @@ class MistralLLM:
 
     # One chat call at temperature 0 with a timeout. Any provider problem (error, no choices,
     # empty text) becomes ASSISTANT_AI_UNAVAILABLE; the provider's own text is never passed on.
+    # `truncated` is true when the provider stopped because of a length limit (no error is raised).
     def chat(
         self,
         messages: list[dict[str, str]],
@@ -100,11 +103,17 @@ class MistralLLM:
             text=str(message.content),
             tokens_in=(usage.prompt_tokens or 0) if usage else 0,
             tokens_out=(usage.completion_tokens or 0) if usage else 0,
+            truncated=response.choices[0].finish_reason in ("length", "model_length"),
         )
 
+    # One embedding call with the same timeout as chat().
     def embed(self, texts: list[str]) -> list[list[float]]:
         try:
-            response = self.client.embeddings.create(model=self.settings.embed_model, inputs=texts)
+            response = self.client.embeddings.create(
+                model=self.settings.embed_model,
+                inputs=texts,
+                timeout_ms=self.settings.ai_timeout_seconds * 1000,
+            )
         except Exception as exc:
             raise AppError(
                 "KNOWLEDGE_EMBEDDING_FAILED", "The embedding service failed.", 503

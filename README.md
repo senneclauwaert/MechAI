@@ -9,7 +9,7 @@ Authors: Nehad and Senne
 
 | Container | Built from | What it does |
 | --- | --- | --- |
-| `db` | `pgvector/pgvector:pg16` (no Dockerfile) | PostgreSQL 16 with pgvector, one schema per module |
+| `db` | `pgvector/pgvector:0.8.7-pg16` (no Dockerfile) | PostgreSQL 16 with pgvector, one schema per module |
 | `api` | `backend/Dockerfile` | FastAPI. Runs the migrations at start |
 | `worker` | `backend/Dockerfile` (same image) | Takes jobs from `core.jobs` (embeddings, ingestion, sync) |
 | `web` | `web/Dockerfile` | Builds the React app and serves it with nginx; forwards `/api` to `api` |

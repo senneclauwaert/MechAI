@@ -9,6 +9,8 @@ from typing import NoReturn
 
 import pytest
 from sqlalchemy import delete
+from sqlalchemy import text as sql_text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -44,6 +46,26 @@ class OtherLLM:
 class DownEmbedLLM(FakeLLM):
     def embed(self, texts: list[str]) -> list[list[float]]:
         raise AppError("ASSISTANT_AI_UNAVAILABLE", "down", 503)
+
+
+# A fake client that embeds every query as one fixed vector, so similarities are known up front.
+class FixedQueryLLM(FakeLLM):
+    def __init__(self, vector: list[float]) -> None:
+        self.vector = vector
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        return [self.vector for _ in texts]
+
+
+def unit(first: float, second: float = 0.0) -> list[float]:
+    """A 1024-dim vector with the first two values set, the rest 0 (cosine is easy to compute)."""
+    dims = get_settings().embed_dimensions
+    return [first, second] + [0.0] * (dims - 2)
+
+
+def use_query_vector(monkeypatch: pytest.MonkeyPatch, vector: list[float]) -> None:
+    """Make retrieve_sections embed every query as `vector`."""
+    monkeypatch.setattr(service, "get_llm", lambda: FixedQueryLLM(vector))
 
 
 def make_document(
@@ -83,15 +105,19 @@ def make_section(db: Session, doc: Document, tokens: int = 50, number: str = "1.
 
 
 def make_chunk(
-    db: Session, section: Section, text: str, model: str | None = FAKE.embedding_model
+    db: Session,
+    section: Section,
+    text: str,
+    model: str | None = FAKE.embedding_model,
+    vector: list[float] | None = None,
 ) -> Chunk:
-    """Save a chunk with a fake embedding (model None: no embedding at all)."""
+    """Save a chunk with a fake embedding, or with `vector` (model None: no embedding at all)."""
     chunk = Chunk(
         section_id=section.id,
         text=text,
         content_hash=uuid.uuid4().hex,
         token_count=10,
-        embedding=FAKE.embed([text])[0] if model else None,
+        embedding=(vector or FAKE.embed([text])[0]) if model else None,
         embedding_model=model,
     )
     db.add(chunk)
@@ -301,3 +327,142 @@ def test_external_text_allowed(
     other: LLMClient = OtherLLM()
     assert service.external_text_allowed(other) is expected
     assert service.external_text_allowed(FakeLLM()) is True  # the fake client is always allowed
+
+
+def test_similarity_values_are_exact(empty_db: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    use_query_vector(monkeypatch, unit(1.0))
+    doc = make_document(empty_db)
+    high = make_chunk(empty_db, make_section(empty_db, doc, number="1.1"), "a", vector=unit(1.0))
+    mid = make_chunk(
+        empty_db, make_section(empty_db, doc, number="2.1"), "b", vector=unit(0.6, 0.8)
+    )
+    low = make_chunk(
+        empty_db, make_section(empty_db, doc, number="3.1"), "c", vector=unit(0.0, 1.0)
+    )
+
+    result = service.retrieve_sections(empty_db, "q", ["zzzunknown"], [])
+
+    by_id = {c.chunk_id: c for c in result.chunks}
+    assert by_id[high.id].similarity == pytest.approx(1.0)
+    assert by_id[mid.id].similarity == pytest.approx(0.6)
+    assert by_id[low.id].similarity == pytest.approx(0.0)
+    assert [by_id[c.id].vector_rank for c in (high, mid, low)] == [1, 2, 3]
+    assert result.best_similarity == pytest.approx(1.0)
+
+
+def test_best_similarity_of_low_chunks_is_low(
+    empty_db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    use_query_vector(monkeypatch, unit(1.0))
+    section = make_section(empty_db, make_document(empty_db))
+    make_chunk(empty_db, section, "a", vector=unit(0.6, 0.8))  # similarity 0.6
+    make_chunk(empty_db, section, "b", vector=unit(0.0, 1.0))  # similarity 0.0
+
+    result = service.retrieve_sections(empty_db, "q", ["zzzunknown"], [])
+
+    assert result.best_similarity == pytest.approx(0.6)  # the maximum, not the minimum or 0.4
+
+
+def test_rrf_scores_and_order(empty_db: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    use_query_vector(monkeypatch, unit(1.0))
+    doc = make_document(empty_db)
+    both_section = make_section(empty_db, doc, number="1.1")
+    vector_section = make_section(empty_db, doc, number="2.1")
+    text_section = make_section(empty_db, doc, number="3.1")
+    # vector list: both (rank 1), vector_only (rank 2); text list: text_only (1), both (2)
+    both = make_chunk(empty_db, both_section, "axle", vector=unit(1.0))
+    vector_only = make_chunk(empty_db, vector_section, "seat", vector=unit(0.6, 0.8))
+    text_only = make_chunk(empty_db, text_section, "axle axle axle", model=None)
+
+    result = service.retrieve_sections(empty_db, "q", ["axle"], [])
+
+    by_id = {c.chunk_id: c for c in result.chunks}
+    assert (by_id[both.id].vector_rank, by_id[both.id].text_rank) == (1, 2)
+    assert (by_id[vector_only.id].vector_rank, by_id[vector_only.id].text_rank) == (2, None)
+    assert (by_id[text_only.id].vector_rank, by_id[text_only.id].text_rank) == (None, 1)
+    assert by_id[both.id].score == pytest.approx(1 / 61 + 1 / 62)
+    assert by_id[vector_only.id].score == pytest.approx(1 / 62)
+    assert by_id[text_only.id].score == pytest.approx(1 / 61)
+    assert by_id[text_only.id].similarity is None
+    assert [c.chunk_id for c in result.chunks] == [both.id, text_only.id, vector_only.id]
+
+
+def test_ai_off_never_creates_a_client(empty_db: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    section = make_section(empty_db, make_document(empty_db))
+    chunk = make_chunk(empty_db, section, "Replace the rear axle bearing.")
+    monkeypatch.setattr(get_settings(), "ai_enabled", False)
+
+    def no_client() -> NoReturn:
+        raise AssertionError("get_llm must not be called")
+
+    monkeypatch.setattr(service, "get_llm", no_client)
+
+    result = service.retrieve_sections(empty_db, "x", ["axle"], [], use_embeddings=True)
+
+    assert [c.chunk_id for c in result.chunks] == [chunk.id]
+    assert result.best_similarity is None
+    assert result.embedding_error is None
+
+
+def test_best_similarity_comes_only_from_returned_sections(
+    empty_db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    use_query_vector(monkeypatch, unit(1.0))
+    monkeypatch.setattr(get_settings(), "answer_sections", 1)
+    doc = make_document(empty_db)
+    close = make_section(empty_db, doc, number="1.1")
+    other = make_section(empty_db, doc, number="2.1")
+    make_chunk(empty_db, close, "seat", vector=unit(1.0))  # similarity 1, no text match
+    make_chunk(empty_db, other, "axle axle", vector=unit(0.6, 0.8))  # similarity 0.6, text match
+
+    result = service.retrieve_sections(empty_db, "q", ["axle"], [])
+
+    assert [s.section_id for s in result.sections] == [other.id]  # the close section is dropped
+    assert result.best_similarity == pytest.approx(0.6)
+
+
+def test_zero_vectors_give_no_score(empty_db: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    section = make_section(empty_db, make_document(empty_db))
+    zero_chunk = make_chunk(empty_db, section, "axle", vector=unit(0.0))
+    # a zero vector in the database: the chunk is not a vector hit
+    use_query_vector(monkeypatch, unit(1.0))
+    result = service.retrieve_sections(empty_db, "q", ["axle"], [])
+    assert result.best_similarity is None
+    assert result.chunks[0].chunk_id == zero_chunk.id
+    assert result.chunks[0].similarity is None
+    assert result.chunks[0].vector_rank is None
+
+    # a zero query vector: nothing has a score
+    make_chunk(empty_db, section, "axle bearing", vector=unit(1.0))
+    use_query_vector(monkeypatch, unit(0.0))
+    result = service.retrieve_sections(empty_db, "q", ["axle"], [])
+    assert result.best_similarity is None
+    assert all(c.similarity is None for c in result.chunks)
+
+
+def test_control_characters_are_removed_from_all_inputs(empty_db: Session) -> None:
+    section = make_section(empty_db, make_document(empty_db))
+    chunk = make_chunk(empty_db, section, "Order bearing AB-1234 for the rear axle.")
+
+    result = service.retrieve_sections(
+        empty_db, "rear\x00 axle\x01 bearing\x1f", ["ax\x00le", "\x07"], ["AB-\x001234", "\x00"]
+    )
+
+    assert result.chunks[0].chunk_id == chunk.id
+    # keywords with no usable word: the words of the query are used
+    only_control = service.retrieve_sections(
+        empty_db, "rear axle", ["\x00", "\x1b"], [], use_embeddings=False
+    )
+    assert [c.chunk_id for c in only_control.chunks] == [chunk.id]
+
+
+def test_clean_replaces_control_characters_by_a_space() -> None:
+    assert service._clean("a\x00b\tc\nd\x7fe") == "a b c d e"
+    assert service._clean("Axle-é 12") == "Axle-é 12"
+
+
+def test_database_errors_do_not_show_bound_values(db: Session) -> None:
+    with pytest.raises(DBAPIError) as error:
+        # a division by zero: the database message itself does not repeat the value
+        db.execute(sql_text("SELECT length(CAST(:value AS text)) / 0"), {"value": "secret-term"})
+    assert "secret-term" not in str(error.value)

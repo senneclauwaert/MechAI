@@ -49,7 +49,8 @@ class Settings(BaseSettings):
     page_image_dpi: int = Field(default=150, ge=72, le=300)
     max_pdf_pages: int = Field(default=500, ge=1, le=5000)
     # Handbook text goes to the AI provider only after Supercube's written OK; it also needs
-    # ai_enabled (a real client is never used for embeddings when either one is off).
+    # ai_enabled. Ingestion refuses a real client when either one is off, and the retrieval of
+    # sections skips the query embedding when ai_enabled is off (text search only).
     # It covers ALL handbook text sent to Mistral (embeddings and chat); the name stays for now.
     allow_external_embeddings: bool = False
     docling_models_dir: str = "/opt/docling-models"
