@@ -13,7 +13,9 @@
 nl = [
   "rook", "rookt", "brandgeur", "brandlucht", "in brand", "opgezwollen", "gezwollen",
   "warm+batterij", "heet+batterij", "hete+batterij", "hete+accu", "gewond",
-  "geelektrocuteerd", "explosie", "ontplof", "vlammen", "brandt", "vuur",
+  "geelektrocuteerd", "explosie", "ontplof", "vlammen", "vuur",
+  "het brandt", "er brandt iets", "iets brandt", "staat te branden",
+  "brandt+batterij", "brandt+accu*", "brandt+motor", "brandt+kart",
   "ruikt+verbrand",
   "heet+accu", "hete+accu", "warm+accu", "warme+accu", "warme+batterij", "elektrische schok",
   "schok gekregen", "gekwetst", "verwond", "er is brand", "rookontwikkeling",

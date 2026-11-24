@@ -1058,3 +1058,33 @@ def test_an_ignored_word_is_blanked_only_as_a_whole_word() -> None:
 )
 def test_being_shocked_is_an_emergency(text: str) -> None:
     assert question_level(text) == "emergency"
+
+
+# "brandt" also means that a lamp is on: only with a fire object or "het brandt" is it an emergency
+@pytest.mark.parametrize(
+    "text",
+    [
+        "het brandt",
+        "er brandt iets",
+        "de batterij brandt",
+        "de accu brandt",
+        "de motor brandt",
+        "mijn kart brandt",
+        "de kart staat in brand",
+        "er is brand",
+    ],
+)
+def test_brandt_with_a_fire_is_an_emergency(text: str) -> None:
+    assert question_level(text) == "emergency"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "de groene lamp brandt",
+        "Controleer of de groene indicator brandt.",
+        "het waarschuwingslampje brandt",
+    ],
+)
+def test_a_lamp_that_is_on_stays_normal(text: str) -> None:
+    assert question_level(text) == "normal"
