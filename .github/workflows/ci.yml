@@ -48,7 +48,7 @@ jobs:
       POSTGRES_PASSWORD: mechai
       POSTGRES_DB: mechai
       POSTGRES_HOST: localhost
-      FILES_DIR: ${{ runner.temp }}/files
+      FILES_DIR: /tmp/mechai-files  # the tests point it at their own temp folder anyway
 
     steps:
       - uses: actions/checkout@v5
