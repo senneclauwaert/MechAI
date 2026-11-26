@@ -41,6 +41,7 @@ def test_fake_chat_json_has_all_keys() -> None:
     assert data["question_language"] == "en"
     assert data["steps"] == [{"text": "Fake step.", "sources": ["S1"]}]
     assert data["safety_flag"] == "normal"
+    assert data["is_bypass"] is False and data["is_wiring"] is False
     assert data["confidence"] == "low"
     assert {"keywords_en", "part_numbers", "parts", "warnings", "missing_information"} <= set(data)
     assert (result.tokens_in, result.tokens_out) == (0, 0)
@@ -118,3 +119,27 @@ def test_mistral_chat_failures_are_ai_unavailable(llm: MistralLLM) -> None:
         llm.chat([])
     assert info.value.code == "ASSISTANT_AI_UNAVAILABLE"
     assert "secret" not in info.value.message
+
+
+def test_fake_translation_copies_the_question_block() -> None:
+    """With json_output the fake client uses the <question> text as the English question."""
+    messages = [
+        {"role": "system", "content": "prompt"},
+        {"role": "user", "content": "<question>\nrear axle &lt;bearing\n</question>"},
+    ]
+    data = json.loads(FakeLLM().chat(messages, json_output=True).text)
+    assert data["question_en"] == data["search_terms_en"] == "rear axle &lt;bearing"
+
+
+def test_fake_translation_is_cut_to_500_characters() -> None:
+    """A long question still gives a valid translation (the limit is 500)."""
+    messages = [{"role": "user", "content": f"<question>\n{'x' * 900}\n</question>"}]
+    data = json.loads(FakeLLM().chat(messages, json_output=True).text)
+    assert data["question_en"] == "x" * 500
+
+
+def test_fake_translation_without_a_question_block_is_not_empty() -> None:
+    """No <question> block (or no message at all) gives the fixed text, never an empty string."""
+    for messages in ([], [{"role": "user", "content": "no block here"}]):
+        data = json.loads(FakeLLM().chat(messages, json_output=True).text)
+        assert data["question_en"] == data["search_terms_en"] == "Fake question."

@@ -1,0 +1,186 @@
+# Word lists for the code-side safety gate (ADR-30). Read once by assistant/checks.py.
+#
+# Matching rules (see checks.py): case, accents, hyphens and extra spaces are ignored.
+# An entry with "+" needs all its parts in the text. A part of 6 or more characters matches
+# anywhere (so "batterij" also finds "batterijkabel"); a shorter part only as a whole word.
+# A part ending in "*" matches the start of a word ("accu*" finds "accukabel"), a part starting
+# with "*" matches the end of a word ("*lader" finds "acculader"). The [ignore] list holds whole
+# words that are blanked out before matching, so "accurate" does not match "accu*".
+#
+# Never remove an entry without a test that shows why. A new list is a new file (words_v2.toml).
+
+[emergency]
+nl = [
+  "rook", "rookt", "brandgeur", "brandlucht", "in brand", "opgezwollen", "gezwollen",
+  "warm+batterij", "heet+batterij", "hete+batterij", "hete+accu", "gewond",
+  "geelektrocuteerd", "explosie", "ontplof", "vlammen", "brandt", "vuur",
+  "het brandt", "er brandt iets", "iets brandt", "staat te branden",
+  "brandt+batterij", "brandt+accu*", "brandt+motor", "brandt+kart",
+  "ruikt+verbrand",
+  "heet+accu", "hete+accu", "warm+accu", "warme+accu", "warme+batterij", "elektrische schok",
+  "schok gekregen", "gekwetst", "verwond", "er is brand", "rookontwikkeling",
+  "rookwolk",
+  # "verbrand" alone also means burnt brake pads: only with a battery, motor, smoke or a person
+  "verbrand+batterij", "verbrand+accu*", "verbrand+motor", "verbrand+rook", "verbrand+hand",
+  "verbrand+handen", "verbrand+arm", "verbrand+vinger", "verbrand+vingers", "verbrand+gezicht",
+  "verbrand+been", "ik ben verbrand", "me verbrand", "mij verbrand",
+  "zich verbrand", "brandwond",
+  # a person who is hurt: gekwetst and gewond are above
+  "een schok", "verbrand+collega", "verbrand+voet", "verbrand+huid", "verbrand+vingers",
+  "verbrand+monteur", "verbrand+mecanicien", "verbrand+bestuurder", "verbrand+me",
+  "verbrand+mij", "verbrand+zich", "ruik+verbrand", "geur+verbrand",
+]
+fr = [
+  "fumee", "en feu", "odeur de brule", "chaude+batterie", "blesse",
+  "explosion", "flammes", "fume", "fument", "il y a le feu", "prend feu", "pris feu",
+  "sent le brule", "choc electrique", "brulant+batterie",
+  # "gonfle" also covers gonflee and gonfler; alone it means inflating a tyre
+  "gonfle+batterie", "gonfle+accu*", "gonfle+pack", "gonfle+cellule",
+  # a person who is hurt or a burning smell ("brule*" also finds brulee and brulees)
+  "brulure", "electrocute", "je me suis brule", "s'est brule", "odeur+brule*",
+  "brule*+main", "brule*+mains", "brule*+bras", "brule*+doigt", "brule*+doigts",
+  "brule*+visage", "brule*+jambe", "brule*+pied", "brule*+peau", "brule*+collegue",
+  "brule*+mecanicien", "brule*+pilote",
+]
+en = [
+  "shocked", "shocks+me",
+  "smoke", "smoking", "fire", "on fire", "burning smell", "swollen", "hot+battery", "injured",
+  "electrocut", "explosion", "flames", "smokes", "smells+burning", "smells+burnt",
+  "electric shock", "is burning", "burning+kart",
+  # a person who is hurt or a burning smell
+  "hurt", "shock", "got a shock", "electrocuted", "burnt smell", "burned smell",
+  "burned my", "burnt my", "got burned", "got burnt",
+  "burned myself", "burned himself", "burned herself", "burned themselves",
+  "burnt myself", "burnt himself", "burnt herself", "burnt themselves",
+  "burned+hand", "burned+hands", "burned+arm", "burned+finger", "burned+fingers",
+  "burned+face", "burned+leg", "burned+foot", "burned+skin", "burned+colleague",
+  "burned+mechanic", "burned+driver",
+  "burnt+hand", "burnt+hands", "burnt+arm", "burnt+finger", "burnt+fingers",
+  "burnt+face", "burnt+leg", "burnt+foot", "burnt+skin", "burnt+colleague",
+  "burnt+mechanic", "burnt+driver",
+]
+
+[bypass]
+nl = [
+  "bypass", "overbrug", "shunt", "interlock", "open+batterijpak", "uitschakel+bms",
+  "omzeil", "bms+uit", "bms+uitzetten", "schakel+bms+uit", "openen+accu", "accupack+open",
+  "accupack+openen", "batterij+openen", "accu+openmaken",
+  # switching off a safety device: each device with each way to say it
+  "noodstop+uitschakel",
+  "noodstop+overbrug",
+  "noodstop+disable",
+  "noodstop+disabling",
+  "noodstop+defeat",
+  "noodstop+desactiv",
+  "noodstop+shunt*",
+  "remsensor+uitschakel",
+  "remsensor+overbrug",
+  "remsensor+disable",
+  "remsensor+disabling",
+  "remsensor+defeat",
+  "remsensor+desactiv",
+  "remsensor+shunt*",
+  "schakel+noodstop+uit", "schakel+remsensor+uit",
+  "noodstop+uit", "noodstop+uitzetten", "remsensor+uitzetten",
+]
+fr = [
+  "shunter", "ouvrir+batterie", "desactiver+bms",
+  "contourner+securite", "neutraliser+securite", "ouverture+batterie",
+  "arret d'urgence+uitschakel",
+  "arret d'urgence+overbrug",
+  "arret d'urgence+disable",
+  "arret d'urgence+disabling",
+  "arret d'urgence+defeat",
+  "arret d'urgence+desactiv",
+  "arret d'urgence+shunt*",
+  "capteur+uitschakel",
+  "capteur+overbrug",
+  "capteur+disable",
+  "capteur+disabling",
+  "capteur+defeat",
+  "capteur+desactiv",
+  "capteur+shunt*",
+  "contourn+arret d'urgence", "contourn+capteur", "contourn+securite",
+]
+en = [
+  "bridge+emergency stop", "bridge+brake sensor", "bridge+seat sensor",
+  "bridging+emergency stop", "bridging+brake sensor", "bridging+seat sensor",
+  "overrid+emergency stop", "overrid+brake sensor", "overrid+seat sensor",
+  "jump+emergency stop", "jump+brake sensor", "jump+seat sensor",
+  "jumping+emergency stop", "jumping+brake sensor", "jumping+seat sensor",
+  "skip+emergency stop", "skip+brake sensor", "skip+seat sensor",
+  "skipping+emergency stop", "skipping+brake sensor", "skipping+seat sensor",
+  "defeat+safety", "open+battery pack", "disable+bms",
+  "override+seat switch", "override+safety", "disabling+bms", "open+battery", "opening+battery",
+  "emergency stop+uitschakel",
+  "emergency stop+overbrug",
+  "emergency stop+disable",
+  "emergency stop+disabling",
+  "emergency stop+defeat",
+  "emergency stop+desactiv",
+  "emergency stop+shunt*",
+  "brake sensor+uitschakel",
+  "brake sensor+overbrug",
+  "brake sensor+disable",
+  "brake sensor+disabling",
+  "brake sensor+defeat",
+  "brake sensor+desactiv",
+  "brake sensor+shunt*",
+  "seat sensor+uitschakel",
+  "seat sensor+overbrug",
+  "seat sensor+disable",
+  "seat sensor+disabling",
+  "seat sensor+defeat",
+  "seat sensor+desactiv",
+  "seat sensor+shunt*",
+  # turn off / switch off ("turn the emergency stop off" too)
+  "turn+off+emergency stop", "turn+off+brake sensor", "turn+off+seat sensor",
+  "turn+off+seat switch", "switch+off+emergency stop", "switch+off+brake sensor",
+  "switch+off+seat sensor", "switch+off+seat switch",
+  "disable+seat switch", "jump+seat switch", "bridge+seat switch", "defeat+seat switch",
+  "bypass+seat switch",
+]
+
+[high_voltage]
+nl = [
+  "batterij", "accu", "accus", "accupack", "lader", "laders", "oplader", "laden", "opladen",
+  "controller", "omvormer", "hoogspanning", "motorkabel", "isolatie", "zekering", "oplaad", "laadstation",
+  "accu*", "laad*", "*lader", "regelaar", "motorregelaar", "accumulator",
+]
+fr = [
+  "batterie", "chargeur", "controleur", "onduleur", "contacteur", "fusible", "haute tension",
+  "isolation", "recharg", "accumulateur", "charge", "cable moteur", "cables moteur",
+  "cable de phase", "cables de phase",
+]
+en = [
+  "battery", "batteries", "bms", "charger", "charging", "controller", "inverter", "contactor",
+  "fuse", "fuses", "high voltage", "hv", "motor cable", "insulation", "charge",
+  "phase cable", "phase cables",
+]
+
+[wiring]
+nl = [
+  "draad", "draden", "bedrading", "kabelboom", "pinout", "connector", "connectors", "stekker",
+  "rode+kabel", "zwarte+kabel", "blauwe+kabel", "gele+kabel", "groene+kabel", "witte+kabel",
+  "oranje+kabel", "pin+kabel", "pin+connector",
+]
+fr = [
+  "cablage", "fil", "fils", "pinout", "connecteur", "rouge+cable", "noir+cable", "bleu+cable",
+  "jaune+cable", "vert+cable", "blanc+cable", "orange+cable", "broche+cable", "pin+cable",
+]
+en = [
+  "wiring", "wire", "wires", "pinout", "red+cable", "black+cable", "blue+cable", "yellow+cable",
+  "green+cable", "white+cable", "orange+cable", "pin+cable", "pin+connector",
+]
+
+# Whole words that look like a safety word but are not (blanked out before matching).
+[ignore]
+nl = [
+  # a lamp that is on, not a fire
+  "lamp brandt", "lampje brandt", "controlelamp brandt", "controlelampje brandt",
+  "waarschuwingslamp brandt", "waarschuwingslampje brandt", "led brandt", "indicator brandt",
+  "accuraat", "gasregelaar", "gasregelaars", "laadruimte", "laadruimtes",
+  "schokbreker", "schokbrekers", "schokdemper", "schokdempers",
+]
+fr = ["accueil", "accueillir", "accueille"]
+en = ["accurate", "accurately", "accuracy", "shock absorber", "shock absorbers"]
