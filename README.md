@@ -75,6 +75,17 @@ docker compose -f compose.yaml -f compose.dev.yaml exec api alembic revision --a
 docker compose -f compose.yaml -f compose.dev.yaml exec api alembic upgrade head
 ```
 
+## CI
+
+Every pull request (and every push to `dev` and `main`) runs `.github/workflows/ci.yml` on GitHub:
+
+- **Backend**: `ruff format --check`, `ruff check`, `mypy app`, the migrations and `pytest`,
+  against a fresh pgvector database.
+- **Frontend**: `oxlint` and `npm run build` (which also type checks).
+- **Docker images**: builds `backend/Dockerfile` and `web/Dockerfile`, without pushing.
+
+Run the same checks before you push (see Common commands above) and CI should stay green.
+
 ## Python libraries with uv
 
 The backend uses [uv](https://docs.astral.sh/uv/) instead of pip. `pyproject.toml` lists the

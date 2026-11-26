@@ -1,0 +1,134 @@
+# Runs on every pull request and on every push to dev and main.
+# Three jobs: backend (format, lint, types, migrations, tests), frontend (lint, types, build)
+# and docker (both images build). All three must be green before a PR can be merged.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [dev, main]
+  workflow_dispatch:
+
+# A new push to the same PR stops the run that is still busy with the old commit.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+
+    # Same database image as compose.yaml, so the migrations and pgvector queries are tested for real.
+    services:
+      db:
+        image: pgvector/pgvector:0.8.7-pg16
+        env:
+          POSTGRES_USER: mechai
+          POSTGRES_PASSWORD: mechai
+          POSTGRES_DB: mechai
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mechai -d mechai"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      ENVIRONMENT: dev
+      POSTGRES_USER: mechai
+      POSTGRES_PASSWORD: mechai
+      POSTGRES_DB: mechai
+      POSTGRES_HOST: localhost
+      FILES_DIR: /tmp/mechai-files  # the tests point it at their own temp folder anyway
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.11.*"
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      - name: Install libraries (exactly as in uv.lock)
+        run: uv sync --locked
+
+      - name: Format
+        run: uv run ruff format --check --diff .
+
+      - name: Lint
+        run: uv run ruff check --output-format=github .
+
+      - name: Types
+        run: uv run mypy app
+
+      - name: Migrations
+        run: uv run alembic upgrade head
+
+      - name: Tests
+        run: uv run pytest
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci
+
+      - name: Lint
+        run: npx oxlint --format github
+
+      # "npm run build" is tsc -b (type check) followed by vite build.
+      - name: Types and build
+        run: npm run build
+
+  docker:
+    name: Docker images
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      # The backend image downloads torch and the Docling models, so the layers are cached
+      # between runs. Nothing is pushed: this only checks that the images still build.
+      - name: Backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          target: prod
+          push: false
+          tags: mechai-backend:ci
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+
+      - name: Web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: web/Dockerfile
+          push: false
+          tags: mechai-web:ci
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web
